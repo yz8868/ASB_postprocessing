@@ -1,0 +1,417 @@
+---
+title: "ASB_motif"
+output: html_document
+date: '2023-03-07'
+---
+
+```{r}
+library(cowplot)
+library(dplyr)
+library(tidyr)
+library(tidyverse)
+library(ggplot2)
+library(ggpubr)
+library(ggVennDiagram)
+library(universalmotif)
+library(Biostrings)
+library(RColorBrewer)
+```
+
+```{r}
+# Read in bayes reports and filter for the intersection of consistent ASB in 2 TFs. Also save gCol preferred and gC24 preferred ASB for later analysis.
+
+df_C24SPL9_F1a_F1aRAF = read.table("./data/C24SPL9_F1a_F1aRAF.bayes_report.csv", header = TRUE)
+df_ColSPL9_F1a_F1aRAF = read.table("./data/ColSPL9_F1a_F1aRAF.bayes_report.csv", header = TRUE)
+F1a_pre_shared_list = intersect(df_ColSPL9_F1a_F1aRAF$ID, df_C24SPL9_F1a_F1aRAF$ID)
+df_C24SPL9_F1a_F1aRAF = df_C24SPL9_F1a_F1aRAF %>% filter(ID %in% F1a_pre_shared_list)
+df_ColSPL9_F1a_F1aRAF = df_ColSPL9_F1a_F1aRAF %>% filter(ID %in% F1a_pre_shared_list)
+
+ColSPL9_F1a_F1aRAF_Col_ID = (df_ColSPL9_F1a_F1aRAF %>% filter(isASB == TRUE & Bayes_sig_A == 1))$ID
+ColSPL9_F1a_F1aRAF_C24_ID = (df_ColSPL9_F1a_F1aRAF %>% filter(isASB == TRUE & Bayes_sig_B == 1))$ID
+C24SPL9_F1a_F1aRAF_Col_ID = (df_C24SPL9_F1a_F1aRAF %>% filter(isASB == TRUE & Bayes_sig_A == 1))$ID
+C24SPL9_F1a_F1aRAF_C24_ID = (df_C24SPL9_F1a_F1aRAF %>% filter(isASB == TRUE & Bayes_sig_B == 1))$ID
+
+F1a_ColASB_consistent_list = intersect(ColSPL9_F1a_F1aRAF_Col_ID, C24SPL9_F1a_F1aRAF_Col_ID)
+write(F1a_ColASB_consistent_list, "./results/F1a_ColASB_consistent_list.txt")
+F1a_C24ASB_consistent_list = intersect(ColSPL9_F1a_F1aRAF_C24_ID, C24SPL9_F1a_F1aRAF_C24_ID)
+write(F1a_C24ASB_consistent_list, "./results/F1a_C24ASB_consistent_list.txt")
+
+F1a_shared_list = union(F1a_ColASB_consistent_list, F1a_C24ASB_consistent_list)
+```
+
+```{r}
+# Generate the bed files for ASB assoociated variations in both coordinates, add 100 bp flanking region each side.
+
+df_Col_vari_bed = read.table("./data/Col_ref_C24_Q_het.bed")
+df_Col_vari_bed = df_Col_vari_bed %>%
+  filter(V9 %in% F1a_shared_list) %>%
+  select(c(V1, V2, V3, V9)) %>%
+  mutate(V2 = V2 - 100, V3 = V3 + 100)
+df_Col_vari_bed
+write.table(df_Col_vari_bed, file = "./data/F1a_shared_ASB_Col_ref_C24_Q.extended.bed", sep = "\t", row.names = FALSE, col.names = FALSE, quote = FALSE)
+
+df_C24_vari_bed = read.table("./data/C24_ref_Col_Q_het.bed")
+df_C24_vari_bed = df_C24_vari_bed %>%
+  filter(V9 %in% F1a_shared_list) %>%
+  select(c(V1, V2, V3, V9)) %>%
+  mutate(V2 = V2 - 100, V3 = V3 + 100)
+df_C24_vari_bed
+write.table(df_C24_vari_bed, file = "./data/F1a_shared_ASB_C24_ref_Col_Q.extended.bed", sep = "\t", row.names = FALSE, col.names = FALSE, quote = FALSE)
+```
+
+```{r}
+# Get fasta with bedtools getfasta -name
+```
+
+
+```{r}
+# Read in motif models and fasta from last step
+
+Col_mapped_ColSPL9_F1a_meme = read_meme("./data/meme/Col_meme/ColSPL9_F1a-B.meme.txt")[[1]]
+Col_mapped_ColSPL9_F1a_meme
+Col_mapped_ColSPL9_F1a_meme["bkg"]
+
+Col_mapped_ColSPL9_F1a_fasta = readDNAStringSet("./data/F1a_shared_ASB_gCol.fasta", format="fasta", seek.first.rec=FALSE, use.names=TRUE)
+C24_mapped_ColSPL9_F1a_fasta = readDNAStringSet("./data/F1a_shared_ASB_gC24.fasta", format="fasta", seek.first.rec=FALSE, use.names=TRUE)
+Col_mapped_ColSPL9_F1a_fasta
+```
+
+```{r}
+# Scan the fasta with motif PWM bp by bp, both + and - strand. For the window containing the variation, select the highest score as the final score for that variation ID. Compare the score on gCol and gC24 by merging by variation ID.
+
+res_Col_mapped_ColSPL9_F1a = scan_sequences(Col_mapped_ColSPL9_F1a_meme, Col_mapped_ColSPL9_F1a_fasta,
+                     threshold = -Inf, threshold.type = "logodds.abs", RC = TRUE)
+res_Col_mapped_ColSPL9_F1a = as.data.frame(res_Col_mapped_ColSPL9_F1a)
+res_Col_mapped_ColSPL9_F1a = res_Col_mapped_ColSPL9_F1a %>%
+  mutate(tempstart = pmin(start, stop), tempstop = pmax(start, stop)) %>%
+  mutate(start = tempstart, stop = tempstop) %>%
+  separate(sequence, into=c('ID','bed_chr', 'bed_start','bed_stop'),sep="::|:|-") %>%
+  mutate_at(c('bed_start', 'bed_stop'), as.numeric) %>%
+  mutate(vari_end = bed_stop - bed_start - 100) %>%
+  select(c(motif, ID, start, stop, score, strand, match, vari_end)) %>%
+  group_by(ID, start) %>%
+  slice_max(score, n = 1) %>%
+  filter(!(stop < 99 | start > vari_end)) %>%
+  select(-vari_end) %>%
+  group_by(ID) %>%
+  slice_max(score, n = 1)
+res_Col_mapped_ColSPL9_F1a
+
+
+res_C24_mapped_ColSPL9_F1a = scan_sequences(Col_mapped_ColSPL9_F1a_meme, C24_mapped_ColSPL9_F1a_fasta,
+                     threshold = -Inf, threshold.type = "logodds.abs", RC = TRUE)
+res_C24_mapped_ColSPL9_F1a = as.data.frame(res_C24_mapped_ColSPL9_F1a)
+res_C24_mapped_ColSPL9_F1a = res_C24_mapped_ColSPL9_F1a %>%
+  mutate(tempstart = pmin(start, stop), tempstop = pmax(start, stop)) %>%
+  mutate(start = tempstart, stop = tempstop) %>%
+  separate(sequence, into=c('ID','bed_chr', 'bed_start','bed_stop'),sep="::|:|-") %>%
+  mutate_at(c('bed_start', 'bed_stop'), as.numeric) %>%
+  mutate(vari_end = bed_stop - bed_start - 100) %>%
+  select(c(motif, ID, start, stop, score, strand, match, vari_end)) %>%
+  group_by(ID, start) %>%
+  slice_max(score, n = 1) %>%
+  filter(!(stop < 99 | start > vari_end)) %>%
+  select(-vari_end) %>%
+  group_by(ID) %>%
+  slice_max(score, n = 1)
+res_C24_mapped_ColSPL9_F1a
+
+res_merged = merge(res_Col_mapped_ColSPL9_F1a, res_C24_mapped_ColSPL9_F1a, by = "ID")
+res_merged
+```
+
+```{r}
+write.csv(res_merged, "./results/F1a_res_merged.csv", row.names = FALSE, quote = FALSE)
+```
+
+
+```{r}
+# Scatterplot of motif scores. Each dot is a variation ID. x-axis is the score on Col genome, y-axis is the score on C24 genome. Within the IDs that has motif discovered in >=1 genome, if the motif is found on Col genome, then the variation is ususally associated with Col-preferred ASB.
+
+res_merged = read.csv("./results/F1a_res_merged.csv")
+F1a_ColASB_consistent_list = readLines("./results/F1a_ColASB_consistent_list.txt")
+F1a_C24ASB_consistent_list = readLines("./results/F1a_C24ASB_consistent_list.txt")
+res_merged = res_merged %>%
+  mutate(ASB = case_when(ID %in% F1a_ColASB_consistent_list ~ "gColASB",
+                         ID %in% F1a_C24ASB_consistent_list ~ "gC24ASB"))
+res_merged
+p1 = ggplot(res_merged, aes(x = score.x, y = score.y, col = ASB)) +
+  geom_point(size = 1, alpha = 0.5) +
+  geom_abline(slope = 1, intercept = 0, linetype="dashed") +
+  xlim(-40, 20) +
+  ylim(-40, 20) +
+  labs(title = "Consistent ASB motif enrichment (All)",
+       x = "Motif score (logodds) on Col genome",
+       y = "Motif score (logodds) on C24 genome") +
+  theme_cowplot()
+p1
+ggsave("./results/motif_score_all.png", p1, height = 6, width = 7.5)
+
+res_merged2 = res_merged %>%
+  filter(score.x > 0 | score.y > 0)
+p2 = ggplot(res_merged2, aes(x = score.x, y = score.y, col = ASB)) +
+  geom_point(size = 1, alpha = 0.5) +
+  geom_abline(slope = 1, intercept = 0, linetype="dashed") +
+  xlim(-40, 20) +
+  ylim(-40, 20) +
+  labs(title = "Consistent ASB motif enrichment (Enriched in >=1 genome)",
+       x = "Motif score (logodds) on Col genome",
+       y = "Motif score (logodds) on C24 genome") +
+  theme_cowplot()
+p2
+ggsave("./results/motif_score.png", p2, height = 6, width = 7.5)
+```
+
+
+```{r}
+# Filter for variations with motif discovered.
+
+res_merged3 = res_merged %>%
+  filter(score.x > 9 | score.y > 9)
+df_vari = read.table("./data/Col_ref_C24_Q_het.bed")
+names(df_vari) = c("Col_chr", "Col_start", "Col_end", "Col_seq",
+                  "C24_seq", "C24_chr", "C24_start", "C24_end", "ID")
+
+df_ASB_vari_all = res_merged %>%
+  dplyr::inner_join(df_vari, by = "ID") %>%
+  filter(ASB == "gColASB") %>%
+  select(c("Col_chr", "Col_start", "Col_end", "ID"))
+df_ASB_vari_all
+
+df_ASB_vari_in_motif = res_merged3 %>%
+  dplyr::inner_join(df_vari, by = "ID")
+df_ASB_vari_in_motif
+
+df_ASB_vari_in_motif = df_ASB_vari_in_motif %>%
+  select(c("Col_chr", "Col_start", "Col_end", "ID", "ASB"))
+
+df_ASB_vari_in_motif_Col = df_ASB_vari_in_motif %>%
+  filter(ASB == "gColASB")
+
+df_ASB_vari_in_motif_C24 = df_ASB_vari_in_motif %>%
+  filter(ASB == "gC24ASB")
+```
+
+```{r}
+# Gene association
+
+library(ChIPseeker)
+library(rtracklayer)
+library(AnnotationDbi)
+library(diffloop)
+
+# TAIR10 gene annotation database file
+txdb28_file = "./data/TxDb.Athaliana.BioMart.plantsmart28_protein_coding"
+txdb28 = loadDb(txdb28_file)
+GenomeInfoDb::seqlevels(txdb28)
+
+# allASB (w/o motif)
+genome = Seqinfo(genome = NA_character_)
+peak_gr = makeGRangesFromDataFrame(df_ASB_vari_in_motif,
+                                   keep.extra.columns = TRUE,
+                                   ignore.strand = TRUE,
+                                   seqinfo = NULL,
+                                   seqnames.field = "Col_chr")
+
+peak_gr = diffloop::rmchr(peak_gr)
+peak_gr
+
+csannot = annotatePeak(peak_gr,
+                       TxDb=txdb28,
+                       tssRegion=c(-1000, 1000),
+                       verbose=TRUE)
+all_csannot_df = as.data.frame(csannot) %>%
+  dplyr::filter(grepl('Promoter', annotation))
+
+all_csannot_df
+all_gene_list = unique(all_csannot_df$geneId)
+
+
+# gColASB
+genome = Seqinfo(genome = NA_character_)
+peak_gr = makeGRangesFromDataFrame(df_ASB_vari_in_motif_Col,
+                                   keep.extra.columns = TRUE,
+                                   ignore.strand = TRUE,
+                                   seqinfo = NULL,
+                                   seqnames.field = "Col_chr")
+
+peak_gr = diffloop::rmchr(peak_gr)
+peak_gr
+
+csannot = annotatePeak(peak_gr,
+                       TxDb=txdb28,
+                       tssRegion=c(-1000, 1000),
+                       verbose=TRUE)
+gCol_csannot_df = as.data.frame(csannot) %>%
+  dplyr::filter(grepl('Promoter', annotation))
+
+gCol_csannot_df
+ColASB_gene_list = unique(gCol_csannot_df$geneId)
+
+
+# gC24ASB
+genome = Seqinfo(genome = NA_character_)
+peak_gr = makeGRangesFromDataFrame(df_ASB_vari_in_motif_C24,
+                                   keep.extra.columns = TRUE,
+                                   ignore.strand = TRUE,
+                                   seqinfo = NULL,
+                                   seqnames.field = "Col_chr")
+
+peak_gr = diffloop::rmchr(peak_gr)
+peak_gr
+
+csannot = annotatePeak(peak_gr,
+                       TxDb=txdb28,
+                       tssRegion=c(-1000, 1000),
+                       verbose=TRUE)
+gC24_csannot_df = as.data.frame(csannot) %>%
+  dplyr::filter(grepl('Promoter', annotation))
+
+gC24_csannot_df
+C24ASB_gene_list = unique(gC24_csannot_df$geneId)
+```
+
+
+```{r}
+# GO analysis
+
+library("org.At.tair.db")
+library(clusterProfiler)
+
+columns(org.At.tair.db)
+
+vari_GO = enrichGO(gene = ColASB_gene_list,
+                  keyType = "TAIR",
+                  OrgDb = "org.At.tair.db",
+                  ont = "ALL",
+                  pAdjustMethod = "none",
+                  pvalueCutoff = 0.05,
+                  readable = TRUE)
+
+df_vari_GO = data.frame(vari_GO)
+head(df_vari_GO)
+nrow(df_vari_GO)
+
+dotplot(vari_GO, showCategory=10)
+
+svg("./results/consistent_ASBvari_in_motif_GO.svg", width=8, height=9)
+dotplot(vari_GO, showCategory=10)
+dev.off()
+```
+
+```{r}
+# Construct the TPM dataframe.
+
+library(readxl)
+df_TPM = read_excel("./data/41586_2020_2094_MOESM4_ESM.xlsx", sheet = "gene expression", skip = 1)
+df_TPM = df_TPM %>%
+  select(contains(c("AGI code", "TPM_"))) %>%
+  select(-"AGI code isoform")
+df_TPM
+write.csv(df_TPM, "./data/TPM.csv", row.names = FALSE, quote = FALSE)
+```
+
+```{r}
+# Select target gene's TPM
+
+df_TPM = read.csv("./data/TPM.csv")
+df_TPM
+
+df_TPM_ColASB = df_TPM %>%
+  filter(AGI.code %in% ColASB_gene_list) %>%
+  column_to_rownames(var = "AGI.code")
+df_TPM_C24ASB = df_TPM %>%
+  filter(AGI.code %in% C24ASB_gene_list) %>%
+  column_to_rownames(var = "AGI.code")
+
+df_TPM_ColASB
+df_TPM_C24ASB
+
+df_TPM_SPL9 = df_TPM %>%
+  filter(AGI.code == "AT2G42200") %>%
+  column_to_rownames(var = "AGI.code")
+```
+
+```{r}
+# Heatmap of target gene tissue wxpression
+
+library(ComplexHeatmap)
+
+mat_TPM_ColASB = t(as.matrix(df_TPM_ColASB))
+mat_TPM_ColASB2 = df_TPM_ColASB %>%
+  mutate_all(., ~replace_na(., 0)) %>%
+  as.matrix()
+
+column_hc_Col = hclust(dist(mat_TPM_ColASB2))
+column_dend_Col = as.dendrogram(column_hc_Col)
+row_hc_Col = hclust(dist(t(mat_TPM_ColASB2)))
+row_dend_Col = as.dendrogram(row_hc_Col)
+
+hmap_Col = Heatmap(mat_TPM_ColASB,
+                   col = brewer.pal(9, 'YlOrRd'),
+                   cluster_columns = column_dend_Col,
+                   cluster_rows = FALSE,
+                   column_title = "gCol TPM Matrix")
+
+
+mat_TPM_C24ASB = t(as.matrix(df_TPM_C24ASB))
+mat_TPM_C24ASB2 = df_TPM_C24ASB %>%
+  mutate_all(., ~replace_na(., 0)) %>%
+  as.matrix()
+
+column_hc_C24 = hclust(dist(mat_TPM_C24ASB2))
+column_dend_C24 = as.dendrogram(column_hc_C24)
+row_hc_C24 = hclust(dist(t(mat_TPM_C24ASB2)))
+row_dend_C24 = as.dendrogram(row_hc_C24)
+
+hmap_C24 = Heatmap(t(as.matrix(df_TPM_C24ASB)),
+                   col = brewer.pal(9, 'YlOrRd'),
+                   cluster_columns = column_dend_C24,
+                   cluster_rows = FALSE,
+                   column_title = "gC24 TPM Matrix")
+
+hmap_SPL9 = Heatmap(t(as.matrix(df_TPM_SPL9)),col = brewer.pal(9, 'YlOrRd'),
+                   cluster_columns = FALSE,
+                   cluster_rows = FALSE,
+                   column_title = "SPL9 TPM Matrix")
+
+hmap_Col + hmap_C24 + hmap_SPL9
+
+png("./results/gCol_F1aASB_TPM_heatmap.png", width = 25, height = 10, units = "in", res = 72)
+hmap_Col + hmap_SPL9
+dev.off()
+
+png("./results/gC24_F1aASB_TPM_heatmap.png", width = 25, height = 10, units = "in", res = 72)
+hmap_C24 + hmap_SPL9
+dev.off()
+```
+
+```{r}
+# merge target gene location, fasta, variation information together to a final dataframe.
+
+df_Col_mapped_ColSPL9_F1a_fasta = as.data.frame(Col_mapped_ColSPL9_F1a_fasta)
+df_Col_mapped_ColSPL9_F1a_fasta = df_Col_mapped_ColSPL9_F1a_fasta %>%
+  rownames_to_column(var = "name") %>%
+  dplyr::rename(seq = x) %>%
+  separate(name, into = c("ID", "vari_chr", "vari_start", "vari_end"), sep = "::|:|-")
+df_Col_mapped_ColSPL9_F1a_fasta
+df_target_gene = all_csannot_df %>%
+  select(-c(seqnames, start, end, strand, annotation, width))
+df_target_gene
+
+df_Col_vari_bed = read.table("./data/Col_ref_C24_Q_het.bed")
+names(df_Col_vari_bed) = c("vari_Col_chr", "vari_Col_start", "vari_Col_end", "vari_Col_seq",
+                           "vari_C24_seq", "vari_C24_chr", "vari_C24_start", "vari_C24_end", "ID")
+
+df_target_gene_vari = df_Col_mapped_ColSPL9_F1a_fasta %>%
+  inner_join(df_target_gene, by = "ID") %>%
+  mutate_at(c("vari_start", "vari_end"), as.numeric) %>%
+  mutate(vari_width = vari_end - vari_start - 200) %>%
+  inner_join(df_Col_vari_bed, by = "ID")
+
+df_target_gene_vari
+length(unique(df_target_gene_vari$geneId))
+
+write.csv(df_target_gene_vari, "./results/target_gene_with_vari_sequence.csv", row.names = FALSE, quote = FALSE)
+```
+
