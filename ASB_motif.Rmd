@@ -15,6 +15,7 @@ library(ggVennDiagram)
 library(universalmotif)
 library(Biostrings)
 library(RColorBrewer)
+library(viridis)
 ```
 
 ```{r}
@@ -280,7 +281,7 @@ library(clusterProfiler)
 
 columns(org.At.tair.db)
 
-vari_GO = enrichGO(gene = ColASB_gene_list,
+vari_GO = enrichGO(gene = all_gene_list,
                   keyType = "TAIR",
                   OrgDb = "org.At.tair.db",
                   ont = "ALL",
@@ -300,15 +301,23 @@ dev.off()
 ```
 
 ```{r}
-# Construct the TPM dataframe.
+# Construct the TPM and iBAQ dataframe.
 
 library(readxl)
-df_TPM = read_excel("./data/41586_2020_2094_MOESM4_ESM.xlsx", sheet = "gene expression", skip = 1)
-df_TPM = df_TPM %>%
+df_TPM_iBAQ = read_excel("./data/41586_2020_2094_MOESM4_ESM.xlsx", sheet = "gene expression", skip = 1)
+df_TPM = df_TPM_iBAQ %>%
   select(contains(c("AGI code", "TPM_"))) %>%
   select(-"AGI code isoform")
 df_TPM
 write.csv(df_TPM, "./data/TPM.csv", row.names = FALSE, quote = FALSE)
+
+df_iBAQ = df_TPM_iBAQ %>%
+  select(contains(c("AGI code", "iBAQ_"))) %>%
+  select(-"AGI code isoform")
+df_iBAQ
+write.csv(df_iBAQ, "./data/iBAQ.csv", row.names = FALSE, quote = FALSE)
+
+SPL_list = c("AT2G47070", "AT5G43270", "AT2G33810", "AT1G53160", "AT3G15270", "AT1G69170", "AT5G18830", "AT1G02065", "AT2G42200", "AT1G27370", "AT1G27360", "AT3G60030", "AT5G50570", "AT5G50670", "AT1G20980", "AT3G57920", "AT1G76580")
 ```
 
 ```{r}
@@ -328,30 +337,94 @@ df_TPM_ColASB
 df_TPM_C24ASB
 
 df_TPM_SPL9 = df_TPM %>%
-  filter(AGI.code == "AT2G42200") %>%
+  filter(AGI.code %in% SPL_list) %>%
+  column_to_rownames(var = "AGI.code")
+
+
+df_iBAQ = read.csv("./data/iBAQ.csv")
+df_iBAQ
+
+df_iBAQ_ColASB = df_iBAQ %>%
+  filter(AGI.code %in% ColASB_gene_list) %>%
+  column_to_rownames(var = "AGI.code")
+df_iBAQ_C24ASB = df_iBAQ %>%
+  filter(AGI.code %in% C24ASB_gene_list) %>%
+  column_to_rownames(var = "AGI.code")
+
+df_iBAQ_ColASB
+df_iBAQ_C24ASB
+
+df_iBAQ_SPL9 = df_iBAQ %>%
+  filter(AGI.code %in% SPL_list) %>%
   column_to_rownames(var = "AGI.code")
 ```
 
 ```{r}
-# Heatmap of target gene tissue wxpression
+# Heatmap of target gene tissue expression
 
 library(ComplexHeatmap)
+
+hmap_SPL_TPM = Heatmap(t(as.matrix(df_TPM_SPL9)),col = brewer.pal(9, 'YlOrRd'),
+                   cluster_columns = FALSE,
+                   cluster_rows = FALSE,
+                   column_title = "SPL9 TPM Matrix")
+
+hmap_SPL_iBAQ = Heatmap(t(as.matrix(df_iBAQ_SPL9)),col = viridis(100),
+                   cluster_columns = FALSE,
+                   cluster_rows = FALSE,
+                   column_title = "SPL9 iBAQ Matrix")
+
+hmap_SPL = hmap_SPL_TPM %v% hmap_SPL_iBAQ
+
+hmap_SPL
+
+png("./results/SPL_heatmap.png", width = 10, height = 10, units = "in", res = 72)
+hmap_SPL
+dev.off()
+
 
 mat_TPM_ColASB = t(as.matrix(df_TPM_ColASB))
 mat_TPM_ColASB2 = df_TPM_ColASB %>%
   mutate_all(., ~replace_na(., 0)) %>%
   as.matrix()
 
-column_hc_Col = hclust(dist(mat_TPM_ColASB2))
-column_dend_Col = as.dendrogram(column_hc_Col)
-row_hc_Col = hclust(dist(t(mat_TPM_ColASB2)))
-row_dend_Col = as.dendrogram(row_hc_Col)
+column_hc_Col_TPM = hclust(dist(mat_TPM_ColASB2))
+column_dend_Col_TPM = as.dendrogram(column_hc_Col_TPM)
 
-hmap_Col = Heatmap(mat_TPM_ColASB,
+hmap_Col_TPM = Heatmap(mat_TPM_ColASB,
                    col = brewer.pal(9, 'YlOrRd'),
-                   cluster_columns = column_dend_Col,
+                   cluster_columns = column_dend_Col_TPM,
                    cluster_rows = FALSE,
                    column_title = "gCol TPM Matrix")
+
+mat_iBAQ_ColASB = t(as.matrix(df_iBAQ_ColASB))
+mat_iBAQ_ColASB2 = df_iBAQ_ColASB %>%
+  mutate_all(., ~replace_na(., 0)) %>%
+  as.matrix()
+
+column_hc_Col_iBAQ = hclust(dist(mat_iBAQ_ColASB2))
+column_dend_Col_iBAQ = as.dendrogram(column_hc_Col_iBAQ)
+
+hmap_Col_iBAQ = Heatmap(mat_iBAQ_ColASB,
+                   col = viridis(100),
+                   cluster_columns = column_dend_Col_iBAQ,
+                   cluster_rows = FALSE,
+                   column_title = "gCol iBAQ Matrix")
+
+
+mat_iBAQ_C24ASB = t(as.matrix(df_iBAQ_C24ASB))
+mat_iBAQ_C24ASB2 = df_iBAQ_C24ASB %>%
+  mutate_all(., ~replace_na(., 0)) %>%
+  as.matrix()
+
+hmap_Col = hmap_Col_TPM %v% hmap_Col_iBAQ
+
+hmap_Col
+
+png("./results/gColASB_F1a_heatmap.png", width = 40, height = 15, units = "in", res = 72)
+hmap_Col
+dev.off()
+
 
 
 mat_TPM_C24ASB = t(as.matrix(df_TPM_C24ASB))
@@ -359,30 +432,35 @@ mat_TPM_C24ASB2 = df_TPM_C24ASB %>%
   mutate_all(., ~replace_na(., 0)) %>%
   as.matrix()
 
-column_hc_C24 = hclust(dist(mat_TPM_C24ASB2))
-column_dend_C24 = as.dendrogram(column_hc_C24)
-row_hc_C24 = hclust(dist(t(mat_TPM_C24ASB2)))
-row_dend_C24 = as.dendrogram(row_hc_C24)
+column_hc_C24_TPM = hclust(dist(mat_TPM_C24ASB2))
+column_dend_C24_TPM = as.dendrogram(column_hc_C24_TPM)
 
-hmap_C24 = Heatmap(t(as.matrix(df_TPM_C24ASB)),
+hmap_C24_TPM = Heatmap(t(as.matrix(df_TPM_C24ASB)),
                    col = brewer.pal(9, 'YlOrRd'),
-                   cluster_columns = column_dend_C24,
+                   cluster_columns = column_dend_C24_TPM,
                    cluster_rows = FALSE,
                    column_title = "gC24 TPM Matrix")
 
-hmap_SPL9 = Heatmap(t(as.matrix(df_TPM_SPL9)),col = brewer.pal(9, 'YlOrRd'),
-                   cluster_columns = FALSE,
+mat_iBAQ_C24ASB = t(as.matrix(df_iBAQ_C24ASB))
+mat_iBAQ_C24ASB2 = df_iBAQ_C24ASB %>%
+  mutate_all(., ~replace_na(., 0)) %>%
+  as.matrix()
+
+column_hc_C24_iBAQ = hclust(dist(mat_iBAQ_C24ASB2))
+column_dend_C24_iBAQ = as.dendrogram(column_hc_C24_iBAQ)
+
+hmap_C24_iBAQ = Heatmap(t(as.matrix(df_iBAQ_C24ASB)),
+                   col = viridis(100),
+                   cluster_columns = column_dend_C24_iBAQ,
                    cluster_rows = FALSE,
-                   column_title = "SPL9 TPM Matrix")
+                   column_title = "gC24 iBAQ Matrix")
 
-hmap_Col + hmap_C24 + hmap_SPL9
+hmap_C24 = hmap_C24_TPM %v% hmap_C24_iBAQ
 
-png("./results/gCol_F1aASB_TPM_heatmap.png", width = 25, height = 10, units = "in", res = 72)
-hmap_Col + hmap_SPL9
-dev.off()
+hmap_C24
 
-png("./results/gC24_F1aASB_TPM_heatmap.png", width = 25, height = 10, units = "in", res = 72)
-hmap_C24 + hmap_SPL9
+png("./results/gC24ASB_F1a_heatmap.png", width = 40, height = 15, units = "in", res = 72)
+hmap_C24
 dev.off()
 ```
 
