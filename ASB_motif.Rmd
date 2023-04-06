@@ -64,7 +64,6 @@ write.table(df_C24_vari_bed, file = "./data/F1a_shared_ASB_C24_ref_Col_Q.extende
 # Get fasta with bedtools getfasta -name
 ```
 
-
 ```{r}
 # Read in motif models and fasta from last step
 
@@ -317,7 +316,7 @@ df_iBAQ = df_TPM_iBAQ %>%
 df_iBAQ
 write.csv(df_iBAQ, "./data/iBAQ.csv", row.names = FALSE, quote = FALSE)
 
-SPL_list = c("AT2G47070", "AT5G43270", "AT2G33810", "AT1G53160", "AT3G15270", "AT1G69170", "AT5G18830", "AT1G02065", "AT2G42200", "AT1G27370", "AT1G27360", "AT3G60030", "AT5G50570", "AT5G50670", "AT1G20980", "AT3G57920", "AT1G76580")
+df_SPL = read.csv("./data/SPL_loci.csv")
 ```
 
 ```{r}
@@ -337,8 +336,10 @@ df_TPM_ColASB
 df_TPM_C24ASB
 
 df_TPM_SPL9 = df_TPM %>%
-  filter(AGI.code %in% SPL_list) %>%
-  column_to_rownames(var = "AGI.code")
+  inner_join(df_SPL, by = c("AGI.code" = "ID")) %>%
+  unite(ID, c("AGI.code", "Name")) %>%
+  column_to_rownames(var = "ID")
+df_TPM_SPL9
 
 
 df_iBAQ = read.csv("./data/iBAQ.csv")
@@ -355,8 +356,10 @@ df_iBAQ_ColASB
 df_iBAQ_C24ASB
 
 df_iBAQ_SPL9 = df_iBAQ %>%
-  filter(AGI.code %in% SPL_list) %>%
-  column_to_rownames(var = "AGI.code")
+  inner_join(df_SPL, by = c("AGI.code" = "ID")) %>%
+  unite(ID, c("AGI.code", "Name")) %>%
+  column_to_rownames(var = "ID")
+df_iBAQ_SPL9
 ```
 
 ```{r}
@@ -364,15 +367,19 @@ df_iBAQ_SPL9 = df_iBAQ %>%
 
 library(ComplexHeatmap)
 
-hmap_SPL_TPM = Heatmap(t(as.matrix(df_TPM_SPL9)),col = brewer.pal(9, 'YlOrRd'),
-                   cluster_columns = FALSE,
-                   cluster_rows = FALSE,
-                   column_title = "SPL9 TPM Matrix")
+hmap_SPL_TPM = Heatmap(t(as.matrix(df_TPM_SPL9)),
+                       col = brewer.pal(9, 'YlOrRd'),
+                       rect_gp = gpar(col = "white", lwd = 2),
+                       cluster_columns = FALSE,
+                       cluster_rows = FALSE,
+                       column_title = "SPL9 TPM Matrix")
 
-hmap_SPL_iBAQ = Heatmap(t(as.matrix(df_iBAQ_SPL9)),col = viridis(100),
-                   cluster_columns = FALSE,
-                   cluster_rows = FALSE,
-                   column_title = "SPL9 iBAQ Matrix")
+hmap_SPL_iBAQ = Heatmap(t(as.matrix(df_iBAQ_SPL9)),
+                        col = viridis(100),
+                        rect_gp = gpar(col = "white", lwd = 2),
+                        cluster_columns = FALSE,
+                        cluster_rows = FALSE,
+                        column_title = "SPL9 iBAQ Matrix")
 
 hmap_SPL = hmap_SPL_TPM %v% hmap_SPL_iBAQ
 
