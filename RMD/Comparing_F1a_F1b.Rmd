@@ -1,0 +1,760 @@
+---
+title: "Comparison_ F1a_F1b"
+output: html_document
+date: "2024-09-09"
+---
+
+**Background on how we obtained the files used for the F1a and F1b comparisons:**
+
+
+F1a and F1b are biological/technical replicates of the same DAP experiment setup using F1 (Col-0 x C24) gDNA library + ColSPL9 TF. ASB Pipeline looks at the binding sites of (for example) ColSPL9 TF (DAP reads) maps them back to Col-0 or C24 reference genome which are then also linked to variations from the syri file that locates where Col-0 (reference) genome and C24 (query) genome is different and that is given a variationID (specifically looking at SNP,INS,DEL,CPG,CPL,HDR,TDM). Based on the read counts from DAP, which is adjusted using background binding from DAP-input (control= DNA pull down where no TF present), the pipeline uses bayesian framework to identify statistically significant ASB events for a given variation. Then we filtered those significant predicted ASB events to only have those that are located at the promoter regions of genes and have a motif score >9. 
+
+
+The goal now is to figure out if this pipeline is actually predicting true events of ASB. But first need to look at the pipeline outputs for the 2 replicates and whether they are similar enough. Ultimately, merging the ASB output data with RNA-seq/mRNA abundance (for Col-0, C24, and F1) data may given preliminary insight into whether the pipeline was able to pick out true events of Allele Specific binding for Col-0's SPL9. 
+
+
+
+```{r}
+#packages/libraries to load
+library(dplyr)
+library(UpSetR)
+library(grid)
+library(readr)
+
+```
+
+```{r}
+#comparing my F1a vs Carol's F1a data 
+F1a_new_Carol= read.csv("./results/F1a_a2024-03-31_asb_postprocessing-target_gene_with_vari_sequence.csv")
+F1a_new_Aurelia= read.csv("./results/F1a_target_gene_with_vari_sequence.csv")
+F1b_ASB = read.csv("./results/F1b_target_gene_with_vari_sequence.csv")
+
+```
+
+#First comparing my new F1a data vs Carol's new F1a data 
+
+## Looking at ASB event associated genes unique to my F1a dataset vs Carol's and what genes are shared 
+```{r}
+library(dplyr)
+
+#obtain unique geneIds in each dataframe
+unique_Aurelia_genes= unique(F1a_new_Aurelia$geneId)
+unique_Carol_genes= unique(F1a_new_Carol$geneId)
+
+#genes unique to Aurelia df
+unique_to_Aurelia= setdiff(unique_Aurelia_genes, unique_Carol_genes)
+
+#genes unique to Carol df
+unique_to_Carol=setdiff(unique_Carol_genes, unique_Aurelia_genes)
+
+#shared genes between both datasets
+shared_genes = intersect(unique_Aurelia_genes, unique_Carol_genes)
+```
+
+## Now checking if these shared genes associated with ASB events are predicted to have the same preference (aka Col specific vs C24 specific)
+```{r}
+#filter shared genes from both dataframes
+shared_Aurelia = F1a_new_Aurelia %>% filter(geneId %in% shared_genes)
+shared_Carol = F1a_new_Carol %>% filter(geneId %in% shared_genes)
+
+#compare ASB column for the same geneIds
+shared_comparison = merge(shared_Aurelia, shared_Carol, by = "geneId", suffixes = c("_Aurelia", "_Carol"))
+
+# Check if ASB column is the same for shared genes
+same_ASB_events= shared_comparison %>% filter(ASB_Aurelia == ASB_Carol)
+different_ASB_events= shared_comparison %>% filter(ASB_Aurelia != ASB_Carol)
+
+#check for # of unique genes that either have same/different ASB predictions
+same_ASB_event_unique_genes = unique(same_ASB_events$geneId)
+different_ASB_event_unique_genes= unique(different_ASB_events$geneId)
+```
+
+```{r}
+unique_to_Aurelia
+```
+
+```{r}
+cat("Number of unique genes in F1a_new_Aurelia:", length(unique_Aurelia_genes), "\n")
+cat("Number of unique genes in F1a_new_Carol:", length(unique_Carol_genes), "\n\n")
+
+
+cat("Number of unique genes to F1a_new_Aurelia:", length(unique_to_Aurelia), "\n")
+cat("Number of unique genes to F1a_new_Carol:", length(unique_to_Carol),  "\n\n")
+
+# Number of same ASB events given the list of genes that are shared amongst the 2 F1a dfs 
+cat("Number of ASB events that are the same direction for genes were found in both F1a datasets:", nrow(same_ASB_events), "\n")
+cat("Number of unique genes found in both F1a datasets that have same ASB prediction:", length(same_ASB_event_unique_genes), "\n \n")
+
+# Number of different ASB events
+cat("Number of ASB events that in different directions for genes were found in both F1a datasets:", nrow(different_ASB_events), "\n")
+cat("Number of unique genes found in both F1a datasets that have different ASB prediction:", length(different_ASB_event_unique_genes), "\n \n")
+```
+```{r}
+library(UpSetR)
+#create df to represent the sets populated with binary indicators (1=true, 0=false) if a certain gene is in the set 
+Gene = unique(c(unique_to_Aurelia, unique_to_Carol, same_ASB_event_unique_genes, different_ASB_event_unique_genes,unique_Aurelia_genes,unique_Carol_genes))
+
+ASB_genes_unique_df=data.frame(
+  Gene = Gene,
+  Unique_to_Aurelia = as.numeric(Gene %in% unique_to_Aurelia), #logical vector if gene is the lists= True--> 1 with as.numeric 
+  Unique_to_Carol = as.numeric(Gene %in% unique_to_Carol),
+  Shared_Same_ASB = as.numeric(Gene %in% same_ASB_event_unique_genes),
+  Shared_Different_ASB = as.numeric(Gene %in% different_ASB_event_unique_genes),
+  Genes_found_in_Aurelia_F1a= as.numeric(Gene %in% unique_Aurelia_genes),
+  Genes_found_in_Carol_F1a = as.numeric(Gene %in% unique_Carol_genes)
+)
+
+#no need for "Gene" col for UpSet plot, only want binary matrix
+data_for_upset_ASB = ASB_genes_unique_df[, -1]
+
+#making upset plot 
+ F1a_ASB_comparison_upset=upset(
+  data_for_upset_ASB,
+  sets = c("Unique_to_Aurelia", "Unique_to_Carol", "Shared_Same_ASB", "Shared_Different_ASB", "Genes_found_in_Aurelia_F1a","Genes_found_in_Carol_F1a"),
+  keep.order = TRUE,
+  main.bar.color = "blue",
+  sets.bar.color = "green",  
+  order.by = "freq",  
+  text.scale = c(1.5, 1.5, 1, 1, 1, 2) 
+) 
+
+F1a_ASB_comparison_upset
+ 
+png(filename = "./results/upset_plot_F1a_comparison.png", width = 1200, height = 1200, res= 200)
+F1a_ASB_comparison_upset
+grid.text("Comparison of Aurelia vs Carol F1a data from ASB Pipeline", x = 0.35, y = 0.98, gp = gpar(fontsize = 10, fontface = "bold"))
+dev.off()
+
+```
+
+
+```{r}
+# Find genes that are present in both different_ASB_event_unique_genes and same_ASB_event_unique_genes
+common_genes = intersect(different_ASB_event_unique_genes, same_ASB_event_unique_genes)
+common_genes
+```
+
+### These genes above still show the same ASB prediction for the given gene and same VariationID (or ID).The ASB prediction conflict arises from 1 gene having different IDs that have different ASB preferences, which is shown to be consistent in both F1a datasets. The only difference is that Carol's dataset is more comprehensive. Since the data should be from me only, I will move forward with my version of the F1a data and compare it with my version of the F1b data. Doing so should also eliminate any differences between the way that Carol and I run/process the data. 
+
+
+
+#Now comparing my new F1a data vs F1b data
+
+## Looking at ASB event associated genes unique to my F1a dataset vs my F1b dataset and what genes are shared 
+```{r}
+#obtain unique geneIds in each dataframe
+unique_F1a_genes= unique(F1a_new_Aurelia$geneId)
+unique_F1b_genes= unique(F1b_ASB$geneId)
+
+#genes unique to Aurelia df
+genes_only_in_F1a= setdiff(unique_F1a_genes, unique_F1b_genes)
+
+#genes unique to Carol df
+genes_only_in_F1b=setdiff(unique_F1b_genes, unique_F1a_genes)
+
+#shared genes between both datasets
+F1a_F1b_shared_genes = intersect(unique_F1b_genes, unique_F1a_genes)
+```
+
+
+## Now checking if these shared genes associated with ASB events are predicted to have the same preference (aka Col specific vs C24 specific)
+```{r}
+#filter shared genes from both dataframes
+shared_F1a= F1a_new_Aurelia %>% filter(geneId %in% F1a_F1b_shared_genes)
+shared_F1b = F1b_ASB %>% filter(geneId %in% F1a_F1b_shared_genes)
+
+#compare ASB column for the same geneIds
+F1a_F1b_shared_comparison = merge(shared_F1a, shared_F1b, by = "geneId", suffixes = c("_F1a", "_F1b"))
+
+#check if ASB column is the same for shared genes
+F1a_F1b_same_ASB_events = F1a_F1b_shared_comparison %>% filter(ASB_F1a == ASB_F1b)
+F1a_F1b_different_ASB_events= F1a_F1b_shared_comparison %>% filter(ASB_F1a != ASB_F1b)
+
+#check for # of unique genes that either have same/different ASB predictions
+F1a_F1b_same_ASB_event_unique_genes = unique(F1a_F1b_same_ASB_events$geneId)
+F1a_F1b_different_ASB_event_unique_genes= unique(F1a_F1b_different_ASB_events$geneId)
+```
+
+```{r}
+#exporting shared F1a/F1b genes to be used in another analysis 
+write.csv(F1a_F1b_same_ASB_event_unique_genes, "F1a_F1b_unique_genes.csv", row.names = FALSE, quote = FALSE)
+```
+
+
+```{r}
+cat("Number of unique genes in F1a:", length(unique_F1a_genes), "\n")
+cat("Number of unique genes in F1b:", length(unique_F1b_genes), "\n\n")
+
+
+cat("Number of unique genes only found in F1a:", length(genes_only_in_F1a), "\n")
+cat("Number of unique genes only found in F1b:", length(genes_only_in_F1b),  "\n\n")
+
+# Number of same ASB events given the list of genes that are shared amongst F1a and F1b
+cat("Number of ASB events that are the same direction for genes were found in both F1a/F1b datasets:", nrow(F1a_F1b_same_ASB_events), "\n")
+cat("Number of unique genes found in both F1a/F1b datasets that have same ASB prediction:", length(F1a_F1b_same_ASB_event_unique_genes), "\n \n")
+
+# Number of different ASB events
+cat("Number of ASB events that in different directions for genes were found in both F1a/F1b datasets:", nrow(F1a_F1b_different_ASB_events), "\n")
+cat("Number of unique genes found in both F1a/F1b datasets that have different ASB prediction:", length(F1a_F1b_different_ASB_event_unique_genes), "\n \n")
+```
+
+
+```{r}
+F1a_F1b_common_genes= intersect (F1a_F1b_different_ASB_event_unique_genes,F1a_F1b_same_ASB_event_unique_genes)
+F1a_F1b_common_genes
+```
+
+### Can see that these 2 genes were also the ones that were repeated in the previous F1a datasets comparison 
+
+```{r}
+F1a_F1b_different_ASB_event_unique_genes
+```
+```{r}
+#create df to represent the sets populated with binary indicators (1=true, 0=false) if a certain gene is in the set 
+combo_f1a_f1b = unique(c(F1a_new_Aurelia$geneId, F1b_ASB$geneId))
+
+F1a_F1b_ASB_genes_unique_df_simple=data.frame(
+  Gene = combo_f1a_f1b,
+  Genes_found_in_F1a = as.numeric(combo_f1a_f1b %in% F1a_new_Aurelia$geneId), #logical vector if gene is the lists= True--> 1 with as.numeric 
+  Genes_found_in_F1b = as.numeric(combo_f1a_f1b %in% F1b_ASB$geneId)
+)
+
+#no need for "Gene" col for UpSet plot, only want binary matrix
+F1a_v_F1b_upset1 = F1a_F1b_ASB_genes_unique_df_simple[, -1]
+
+#making upset plot 
+ F1a_F1b_ASB_comparison_upset1=upset(
+  F1a_v_F1b_upset1,
+  sets = c("Genes_found_in_F1a", "Genes_found_in_F1b"),
+  keep.order = TRUE,
+  main.bar.color = "blue",
+  sets.bar.color = "green",  
+  order.by = "freq",  
+  text.scale = c(1.5, 1.5, 1, 1, 1, 2) 
+) 
+
+F1a_F1b_ASB_comparison_upset1
+ 
+# png(filename = "./results/upset_plot_F1a_F1b_comparison.png", width = 1200, height = 1200, res= 200)
+# F1a_F1b_ASB_comparison_upset
+# grid.text("Comparison of F1a vs F1b data from ASB Pipeline", x = 0.29, y = 0.98, gp = gpar(fontsize = 10, fontface = "bold"))
+# dev.off()
+```
+```{r}
+length(combo_f1a_f1b)
+```
+
+```{r}
+#create df to represent the sets populated with binary indicators (1=true, 0=false) if a certain gene is in the set 
+all_gene_list = unique(c(unique_F1a_genes, unique_F1b_genes, genes_only_in_F1a, genes_only_in_F1b, F1a_F1b_same_ASB_event_unique_genes, F1a_F1b_different_ASB_event_unique_genes))
+
+F1a_F1b_ASB_genes_unique_df=data.frame(
+  Gene = all_gene_list,
+  Unique_genes_in_F1a = as.numeric(all_gene_list %in% unique_F1a_genes), #logical vector if gene is the lists= True--> 1 with as.numeric 
+  Unique_genes_in_F1b = as.numeric(all_gene_list %in% unique_F1b_genes),
+  F1a_F1b_Shared_genes_with_same_ASB = as.numeric(all_gene_list %in% F1a_F1b_same_ASB_event_unique_genes),
+  F1a_F1b_Shared_genes_with_different_ASB = as.numeric(all_gene_list %in% F1a_F1b_different_ASB_event_unique_genes),
+  Genes_found_only_in_F1a= as.numeric(all_gene_list %in% genes_only_in_F1a),
+  Genes_found_in_only_F1b = as.numeric(all_gene_list %in% genes_only_in_F1b)
+)
+
+#no need for "Gene" col for UpSet plot, only want binary matrix
+F1a_v_F1b_upset = F1a_F1b_ASB_genes_unique_df[, -1]
+
+#making upset plot 
+ F1a_F1b_ASB_comparison_upset=upset(
+  F1a_v_F1b_upset,
+  sets = c("Unique_genes_in_F1a", "Unique_genes_in_F1b", "F1a_F1b_Shared_genes_with_same_ASB", "F1a_F1b_Shared_genes_with_different_ASB", "Genes_found_only_in_F1a","Genes_found_in_only_F1b"),
+  keep.order = TRUE,
+  main.bar.color = "blue",
+  sets.bar.color = "green",  
+  order.by = "freq",  
+  text.scale = c(1.5, 1.5, 1, 1, 1, 2) 
+) 
+
+F1a_F1b_ASB_comparison_upset
+ 
+# png(filename = "./results/upset_plot_F1a_F1b_comparison.png", width = 1200, height = 1200, res= 200)
+# F1a_F1b_ASB_comparison_upset
+# grid.text("Comparison of F1a vs F1b data from ASB Pipeline", x = 0.29, y = 0.98, gp = gpar(fontsize = 10, fontface = "bold"))
+# dev.off()
+```
+
+
+## Now focusing on ASB events specifically and checking if these ASB events are in the same direction, aka if event is Col-specifc for both F1a and F1b?
+```{r}
+#obtain unique ASB events in each dataframe with unique combination of VariationID and geneID
+unique_F1a_ASB_events= unique(F1a_new_Aurelia)
+unique_F1b_ASB_events= unique(F1b_ASB)
+
+#ASB events unique to F1a df
+ASB_events_only_in_F1a= anti_join(unique_F1a_ASB_events, unique_F1b_ASB_events)
+
+#ASB events unique to F1b df
+ASB_events_only_in_F1b=anti_join(unique_F1b_ASB_events, unique_F1a_ASB_events)
+
+#shared ASB events between both datasets
+F1a_F1b_shared_ASB_events = merge(unique_F1b_ASB_events, unique_F1a_ASB_events, by = "ID", suffixes = c("_F1a", "_F1b"))
+
+write.csv(ASB_events_only_in_F1a,"./results/ASB_events_only_in_F1a.csv", row.names = FALSE, quote = FALSE)
+write.csv(ASB_events_only_in_F1b,"./results/ASB_events_only_in_F1b.csv", row.names = FALSE, quote = FALSE)
+```
+
+
+
+```{r}
+#filter shared genes from both dataframes
+shared_F1a_ASB_events = F1a_new_Aurelia %>% filter(ID %in% F1a_F1b_shared_ASB_events$ID)
+shared_F1b_ASB_events = F1b_ASB %>% filter(ID %in% F1a_F1b_shared_ASB_events$ID)
+
+#compare ASB column for the same IDs
+F1a_F1b_shared_ASB_event_comparison = merge(shared_F1a_ASB_events, shared_F1b_ASB_events,by = "ID", suffixes = c("_F1a", "_F1b"))
+unique_F1a_F1b_shared_ASB_event_comparison= unique(F1a_F1b_shared_ASB_event_comparison)
+
+#check if ASB column is the same for shared genes
+F1a_F1b_same_ASB_events2 = F1a_F1b_shared_ASB_event_comparison %>% filter(ASB_F1a == ASB_F1b)
+F1a_F1b_different_ASB_events2= F1a_F1b_shared_ASB_event_comparison %>% filter(ASB_F1a != ASB_F1b)
+
+#check for # of unique genes that either have same/different ASB predictions
+F1a_F1b_same_ASB_event_unique = unique(F1a_F1b_same_ASB_events2)
+F1a_F1b_different_ASB_event_unique= unique(F1a_F1b_different_ASB_events2)
+```
+
+
+```{r}
+cat("Number of unique ASB events in F1a:", nrow(unique_F1a_ASB_events), "\n")
+cat("Number of unique ASB events in F1b:", nrow(unique_F1b_ASB_events), "\n\n")
+
+
+cat("Number of unique ASB events only found in F1a:", nrow(ASB_events_only_in_F1a), "\n")
+cat("Number of unique ASB events only found in F1b:", nrow(ASB_events_only_in_F1b),  "\n\n")
+
+# Num of shared ASB events that have SAME predicted ASB direction in F1a and F1b
+cat("Number of ASB events that are the same direction for genes were found in both F1a/F1b datasets:", nrow(F1a_F1b_same_ASB_events2), "\n")
+cat("Number of unique ASB events found in both F1a/F1b datasets that have same ASB prediction:", nrow(F1a_F1b_same_ASB_event_unique), "\n \n")
+
+# Num of shared ASB events that have DIFFERENT predicted ASB direction in F1a and F1b
+cat("Number of ASB events that in different directions for genes were found in both F1a/F1b datasets:", nrow(F1a_F1b_different_ASB_events2), "\n")
+cat("Number of unique ASB events found in both F1a/F1b datasets that have different ASB prediction:", nrow(F1a_F1b_different_ASB_event_unique), "\n \n")
+```
+### Now checking to see if for a VariationIDs are associated with more than 1 gene --> no there are not VariationIDs that are assocaited with more than 1 gene!
+```{r}
+#checking for shared ASB events df 
+#group by ID and count the number of unique geneId values
+id_geneId_count = F1a_F1b_shared_ASB_event_comparison %>%
+  group_by(ID) %>%
+   dplyr::summarize(unique_geneId_count_share_F1a = n_distinct(geneId_F1a),unique_geneId_count_share_F1b = n_distinct(geneId_F1b) )
+
+
+#filter to find IDs with more than 1 unique geneId
+ids_with_multiple_geneIds =id_geneId_count %>% filter(unique_geneId_count_share_F1a > 1| unique_geneId_count_share_F1b > 1)
+
+#now checking for F1a df to see if VariationIDs are associated with more than 1 gene 
+id_geneId_count_F1a =F1a_new_Aurelia %>% group_by(ID) %>% dplyr::summarize(unique_geneId_count_f1a = n_distinct(geneId))
+ids_with_multiple_geneIds_F1a =id_geneId_count_F1a %>% filter(unique_geneId_count_f1a > 1)
+
+#now checking for F1a df to see if VariationIDs are associated with more than 1 gene 
+id_geneId_count_F1b = F1b_ASB %>% group_by(ID) %>%  dplyr::summarize(unique_geneId_count_F1b = n_distinct(geneId))
+ids_with_multiple_geneIds_F1b =id_geneId_count_F1b %>% filter(unique_geneId_count_F1b > 1)
+
+cat("There are", nrow(ids_with_multiple_geneIds), "variation-ids that are associated with more than 1 gene in ASB events shared between F1 and F1b \n")
+cat("There are", nrow(ids_with_multiple_geneIds_F1a), "variation-ids that are associated with more than 1 gene in F1a ASB events \n")
+cat("There are", nrow(ids_with_multiple_geneIds_F1b), "variation-ids that are associated with more than 1 gene in F1b ASB events \n")
+
+
+```
+
+```{r}
+#create df to represent the sets populated with binary indicators (1=true, 0=false) if a certain ASB event is in the set 
+all_ASB_event_list = unique(c(unique_F1a_ASB_events$ID, unique_F1b_ASB_events$ID, ASB_events_only_in_F1a$ID,  ASB_events_only_in_F1b$ID, F1a_F1b_same_ASB_event_unique$ID, F1a_F1b_different_ASB_event_unique$ID))
+
+F1a_F1b_unique_ASB_event_df=data.frame(
+  Variation_ID = all_ASB_event_list,
+  Unique_ASB_events_in_F1a = as.numeric(all_ASB_event_list %in% unique_F1a_ASB_events$ID), #logical vector if gene is the lists= True--> 1 with as.numeric 
+  Unique_ASB_events_in_F1b = as.numeric(all_ASB_event_list %in% unique_F1b_ASB_events$ID),
+  F1a_F1b_Shared_ASB_Events_same_ASB = as.numeric(all_ASB_event_list %in% F1a_F1b_same_ASB_event_unique$ID),
+  F1a_F1b_Shared_ASB_Events_with_different_ASB = as.numeric(all_ASB_event_list %in% F1a_F1b_different_ASB_event_unique$ID),
+  ASB_events_found_only_in_F1a= as.numeric(all_ASB_event_list %in% ASB_events_only_in_F1a$ID),
+  ASB_events_found_in_only_F1b = as.numeric(all_ASB_event_list %in% ASB_events_only_in_F1b$ID)
+)
+
+#no need for "Variation_ID" col for UpSet plot, only want binary matrix
+F1a_v_F1b_ASB_event_upset = F1a_F1b_unique_ASB_event_df[, -1]
+
+#making upset plot 
+ F1a_F1b_ASB_comparison_upset2=upset(
+  F1a_v_F1b_ASB_event_upset,
+  sets = c("Unique_ASB_events_in_F1a", "Unique_ASB_events_in_F1b", "F1a_F1b_Shared_ASB_Events_same_ASB", "F1a_F1b_Shared_ASB_Events_with_different_ASB", "ASB_events_found_only_in_F1a","ASB_events_found_in_only_F1b"),
+  keep.order = TRUE,
+  main.bar.color = "blue",
+  sets.bar.color = "green",  
+  order.by = "freq",  
+  text.scale = c(1.5, 1.5, 1, 1, 1, 2) 
+) 
+
+F1a_F1b_ASB_comparison_upset2
+ 
+# png(filename = "./results/upset_plot_F1a_F1b_comparison_ASB_events.png", width = 1200, height = 1200, res= 200)
+# F1a_F1b_ASB_comparison_upset2
+# grid.text("Comparison of ASB events in F1a vs F1b data from ASB Pipeline", x = 0.36, y = 0.98, gp = gpar(fontsize = 10, fontface = "bold"))
+#dev.off()
+```
+
+
+```{r}
+#adding 1 to avoid division by zero in REF and ALT counts, pseudocount 
+
+small_value = 1e-2  # Adjust this based on the scale of your data
+unique_count_shared_mutated = unique_count_shared  %>%
+  mutate(
+    REF.counts_F1a = ifelse(REF.counts_F1a == 0, small_value, REF.counts_F1a),
+    ALT.counts_F1a = ifelse(ALT.counts_F1a == 0, small_value, ALT.counts_F1a),
+    REF.counts_F1b = ifelse(REF.counts_F1b == 0, small_value, REF.counts_F1b),
+    ALT.counts_F1b = ifelse(ALT.counts_F1b == 0, small_value, ALT.counts_F1b)
+  ) %>%
+mutate(
+    F1a_ratio = REF.counts_F1a / ALT.counts_F1a,
+    F1b_ratio = REF.counts_F1b / ALT.counts_F1b
+  )
+
+
+#plot the scatter plot with the updated ratios
+ggplot(unique_count_shared_mutated, aes(x = F1a_ratio, y = F1b_ratio)) +
+  geom_point(aes(color = ASB_F1a), size = 4, alpha = 0.3) +
+  labs(
+    title = "Scatter Plot of Col to C24 read count ratios (F1a vs F1b)",
+    x = "Col to C24 Ratio (F1a)",
+    y = "Col to C24 Ratio (F1b)",
+    color = "ASB in F1a"
+  ) +
+  theme_minimal() +
+  theme(
+    text = element_text(size = 14),
+    plot.title = element_text(hjust = 0.5),
+    legend.position = "top"
+  ) +
+  scale_color_manual(values = c("Col allele preferred ASB" = "blue", "C24 allele preferred ASB" = "red"))
+
+```
+```{r}
+small_value = 1e-2  # Adjust this based on the scale of your data
+unique_count_shared_mutated = unique_count_shared  %>%
+  mutate(
+    REF.counts_F1a = ifelse(REF.counts_F1a == 0, small_value, REF.counts_F1a),
+    ALT.counts_F1a = ifelse(ALT.counts_F1a == 0, small_value, ALT.counts_F1a),
+    REF.counts_F1b = ifelse(REF.counts_F1b == 0, small_value, REF.counts_F1b),
+    ALT.counts_F1b = ifelse(ALT.counts_F1b == 0, small_value, ALT.counts_F1b)
+  ) %>%
+mutate(
+    F1a_ratio = REF.counts_F1a / ALT.counts_F1a,
+    F1b_ratio = REF.counts_F1b / ALT.counts_F1b
+  )
+
+
+#plot the scatter plot with the updated ratios
+ggplot(unique_count_shared_mutated, aes(x = F1a_ratio, y = F1b_ratio)) +
+  geom_point(aes(color = ASB_F1a), size = 4, alpha = 0.3) +
+  labs(
+    title = "Scatter Plot of Col to C24 read count ratios (F1a vs F1b)",
+    x = "Col to C24 Ratio (F1a)",
+    y = "Col to C24 Ratio (F1b)",
+    color = "ASB in F1a"
+  ) +
+  theme_minimal() +
+  theme(
+    text = element_text(size = 14),
+    plot.title = element_text(hjust = 0.5),
+    legend.position = "top"
+  ) +
+  scale_color_manual(values = c("Col allele preferred ASB" = "blue", "C24 allele preferred ASB" = "red"))+
+  xlim(0, 1e+05) +  # Set x-axis limit
+  ylim(0, 1e+05)    # Set y-axis limit
+
+```
+
+Want to make new upset plot that clearly describes the shared ASB events and if they are all going in the same direction
+
+```{r}
+#create df to represent the sets populated with binary indicators (1=true, 0=false) if a certain ASB event is in the set 
+shared_f1a_f1b_events = unique(c(F1a_F1b_same_ASB_event_unique$ID, F1a_F1b_different_ASB_event_unique$ID))
+
+new_upset_df=data.frame(
+  Variation_ID = shared_f1a_f1b_events,
+  Same_ASB_prediction = as.numeric(shared_f1a_f1b_events %in% F1a_F1b_same_ASB_event_unique$ID), #logical vector if gene is the lists= True--> 1 with as.numeric 
+  Different_ASB_prediction = as.numeric(shared_f1a_f1b_events %in% F1a_F1b_different_ASB_event_unique$ID)
+)
+
+#no need for "Variation_ID" col for UpSet plot, only want binary matrix
+new_upset_df_edit = new_upset_df[, -1]
+
+#making upset plot 
+ F1a_F1b_ASB_comparison_upset3=upset(
+ new_upset_df,
+  sets = c("Same_ASB_prediction", "Different_ASB_prediction"),
+  keep.order = TRUE,
+  main.bar.color = "blue",
+  sets.bar.color = "green",  
+  order.by = "freq",  
+  text.scale = c(1.5, 1.5, 1, 1, 1, 2) 
+) 
+
+F1a_F1b_ASB_comparison_upset3
+
+png(filename = "./results/upset_plot_F1a_F1b_comparison_ASB_direction.png", width = 1200, height = 1200, res= 200)
+F1a_F1b_ASB_comparison_upset3
+grid.text("Comparison of Shared F1a/F1b ", x = 0.25, y = 0.98, gp = gpar(fontsize = 10, fontface = "bold"))
+grid.text(" ASB event direction ", x = 0.30, y = 0.96, gp = gpar(fontsize = 10, fontface = "bold"))
+dev.off()
+```
+
+
+## Now look into the read counts of the ASB events using the ColSPL9 TF between F1a and F1b, are there more read counts in F1a than F1b in the ASB events they share? If so, what genes or ASB events is it assocaited with? And other way around for F1b, is it a drastic difference? 
+```{r}
+# #reading in the ref/alt DAP-seq read counts df from the pipeline 
+# ColSPL9_F1a_count= read_csv("./data/ColSPL9_F1a_F1aRAF.csv")
+# ColSPL9_F1b_count= read_csv("./data/ColSPL9_F1b_F1bRAF.csv")
+# 
+# #merging the count df and F1a or F1b original df that was not filtered yet
+# merge_count_F1a_ASB= merge(F1a_new_Aurelia, ColSPL9_F1a_count,by= "ID")
+# merge_count_F1b_ASB= merge(F1b_ASB, ColSPL9_F1b_count,by= "ID")
+# 
+# #merging the 2 f1a abd f1b dfs to see total count data differences btwn the 2 dfs 
+# merge_count_F1a_F1b_ASB= merge(merge_count_F1a_ASB, merge_count_F1b_ASB, by = "ID",suffixes = c("_F1a", "_F1b"))
+# unique_count_shared= unique(merge_count_F1a_F1b_ASB) #to get unique instances of ASB events, shared amongst F1b and F1a, which also have read counts attached (total, REF, ALT counts)
+```
+
+```{r}
+higher_F1a_count= unique_count_shared %>% filter(total_F1a>total_F1b)
+higher_F1b_count=unique_count_shared %>% filter(total_F1b>total_F1a)
+
+cat("There are a total of", nrow(unique_count_shared), "unique ASB events shared between F1 and F1b captured by Col-0 SPL9 \n")
+cat("There are a total of", nrow(higher_F1a_count), "unique ASB events that have higher read counts in F1a compared to F1b \n")
+cat("There are a total of", nrow(higher_F1b_count), "unique ASB events that have higher read counts in F1b compared to F1a \n")
+
+```
+
+
+```{r}
+#create df to represent the sets populated with binary indicators (1=true, 0=false) if a certain ASB event is in the set 
+read_count_comparison_list = unique(c(higher_F1a_count$ID, higher_F1b_count$ID))
+
+F1a_F1b_read_count_df=data.frame(
+  read_count = read_count_comparison_list,#logical vector if gene is the lists= True--> 1 with as.numeric 
+  Unique_ASB_event_higher_read_count_in_F1a = as.numeric(read_count_comparison_list %in% higher_F1a_count$ID),
+  Unique_ASB_event_higher_read_count_in_F1b = as.numeric(read_count_comparison_list %in%  higher_F1b_count$ID)
+)
+
+#no need for "Variation_ID" col for UpSet plot, only want binary matrix
+upset3_df = F1a_F1b_read_count_df[, -1]
+
+#making upset plot 
+ F1a_F1b_ASB_comparison_upset3=upset(
+  upset3_df,
+  sets = c("Unique_ASB_event_higher_read_count_in_F1a", "Unique_ASB_event_higher_read_count_in_F1b"), 
+  keep.order = TRUE,
+  main.bar.color = "blue",
+  sets.bar.color = "gray",  
+  order.by = "freq",  
+  text.scale = c(1.5, 1.5, 1, 1, 1, 2) 
+) 
+
+F1a_F1b_ASB_comparison_upset3
+ 
+png(filename = "./results/upset_plot_F1a_F1b_comparison_ASB_events_read_count.png", width = 1200, height = 1200, res= 200)
+F1a_F1b_ASB_comparison_upset3
+grid.text("Comparison of ASB events in F1a vs F1b", x = 0.30, y = 0.98, gp = gpar(fontsize = 10, fontface = "bold"))
+grid.text(" based on read count data", x = 0.31, y = 0.95, gp = gpar(fontsize = 10, fontface = "bold"))
+dev.off()
+
+```
+
+
+
+```{r}
+# add new col to calculate log2fc between F1a and F1b total read counts 
+higher_F1a_count = higher_F1a_count %>%
+  mutate(log2_fold_change_F1a = log2(total_F1a / total_F1b))
+
+higher_F1b_count = higher_F1b_count %>%
+  mutate(log2_fold_change_F1b = log2(total_F1b / total_F1a))
+
+
+#df where ASB events shared between F1a and F1b have higher counts in F1a compared to F1b 
+#only want REF.counts bc can easily see/calc what Alt counts are since total is adding ref+alt counts together 
+df_higher_counts_in_F1a= higher_F1a_count %>% select(ID, geneId_F1a,ASB_F1a,ASB_F1b, REF.counts_F1a,  total_F1a, REF.counts_F1b ,total_F1b, log2_fold_change_F1a)
+df_higher_counts_in_F1a
+```
+
+```{r}
+summary(df_higher_counts_in_F1a$log2_fold_change_F1a)
+```
+
+```{r}
+library(ggplot2)
+
+ggplot(higher_F1a_count, aes(x = log2_fold_change_F1a)) +
+  geom_histogram(binwidth = 0.5, fill = "blue", color = "black") +
+  theme_minimal() +
+  labs(title = "Histogram of Log2FC of Read Counts for ASB Events (F1a vs F1b)",
+       x = "Log2 FC (F1a / F1b) of Read Counts",
+       y = "# of ASB events")
+
+```
+
+```{r}
+#df where ASB events shared between F1a and F1b have higher counts in F1b compared to F1a 
+#only want REF.counts bc can easily see/calc what Alt counts are since total is adding ref+alt counts together 
+df_higher_counts_in_F1b= higher_F1b_count %>% select(ID, geneId_F1b,ASB_F1a, ASB_F1b, REF.counts_F1a,  total_F1a, REF.counts_F1b ,total_F1b, log2_fold_change_F1b)
+df_higher_counts_in_F1b
+```
+```{r}
+summary(df_higher_counts_in_F1b$log2_fold_change_F1b)
+```
+
+```{r}
+ggplot(higher_F1b_count, aes(x = log2_fold_change_F1b)) +
+  geom_histogram(binwidth = 0.1, fill = "blue", color = "black") +
+  theme_minimal() +
+  labs(title = "Histogram of Log2FC of Read Counts for ASB Events (F1b vs F1a)",
+       x = "Log2 FC (F1b / F1a) of Read Counts",
+       y = "# of ASB events")
+```
+
+
+## Now want to look specifcally into the genes that had different ASB predictions, were did they show up in the group where F1a had higher read counts or F1b had higher read counts?
+
+**Findings:** 
+* 3/6 genes had completely different IDs for a given geneID, so not comparable
+* 1 gene was found to have higher read counts in F1a SNP47287 (AT1G21480) (also an actual example of ASB prediction conflict)
+* 2 genes were found to have higher read counts in F1b: HDR1121 (AT2G03000) and SNP742677 (AT4G20200)
+
+```{r}
+F1a_F1b_different_ASB_event_unique_genes
+```
+
+
+```{r}
+#looking at df where F1b had higher read counts, how many of the genes with different ASB predictions were in this group?
+dif_ASB_prediction_df_higher_counts_in_F1a = df_higher_counts_in_F1a %>%
+  filter(geneId_F1a %in% F1a_F1b_different_ASB_event_unique_genes)
+dif_ASB_prediction_df_higher_counts_in_F1a 
+```
+
+```{r}
+
+#looking at df where F1b had higher read counts, how many of the genes with different ASB predictions were in this group?
+dif_ASB_prediction_df_higher_counts_in_F1b = df_higher_counts_in_F1b %>%
+  filter(geneId_F1b %in% F1a_F1b_different_ASB_event_unique_genes)
+dif_ASB_prediction_df_higher_counts_in_F1b 
+
+```
+## Found that out of 94 shared ASB events between F1a and F1b, there was only 1 ASB event with the same variationID that produced different ASB predictions. 
+
+*seems like this may be to due F1b not having and read counts mapped to Col-0 unlike All the F1a data which show reads being mapped to both Col-0 and C24 
+
+
+## Looking at AR differences between merged F1a/F1b data and if they lead to same ASB predictions. AKA between F1 and F1b shared ASB events, are the Col/C24 adjusted read count ratios also alignin with the SAME ASB prediction? 
+```{r}
+#merge the F1a and F1b data with the BaalChIP ASB output to get the Corrected.AR merged with the data (allelic ratio between Col/C24 from DAP reads adjusted from the Bayesian Likelihood model used which incorporates RMbias and RAF information)
+# remember that RAF looks at the background abundance of Col vs C24 (found from DAP-input data) for each Variation, used to correct the read counts from DAP
+
+F1a_ASB_results= read_tsv("./data/ColSPL9_F1a_F1aRAF.bayes_report.csv")
+F1b_ASB_results= read_tsv("~/Documents/Aurelia /huang_lab/ASB_postprocessing-main/data/ColSPL9_F1b_F1bRAF.bayes_report.csv")
+
+
+#merging ColSPL9 BaalChIP output with ASB/ gene information from post-processing pipeline 
+F1a_merge_AR= merge(F1a_new_Aurelia, F1a_ASB_results, by= "ID")
+F1b_merge_AR= merge(F1b_ASB, F1b_ASB_results,by= "ID")
+
+#merging the 2 dfs and obtaining unique ASB events shared between F1a and F1b with AR information 
+merge_AR_F1a_F1b_ASB= merge(F1a_merge_AR, F1b_merge_AR, by = "ID",suffixes = c("_F1a", "_F1b"))
+unique_AR_shared= unique(merge_AR_F1a_F1b_ASB) 
+unique_AR_shared = unique_AR_shared %>%
+  mutate(log2AR_F1a = log2(AR_F1a), log2AR_F1b = log2(AR_F1b), log2_AR_corrected_F1a= log2(Corrected.AR_F1a),log2_AR_corrected_F1b= log2(Corrected.AR_F1b))
+
+```
+
+```{r}
+#plot the scatter plot with the AR log2fc
+library(ggplot2)
+
+unique_AR_shared = unique_AR_shared %>%
+  mutate(ASB_combined = case_when(
+    ASB_F1a == "Col allele preferred ASB" & ASB_F1b == "Col allele preferred ASB" ~ "Same Prediction:Col",
+    ASB_F1a == "Col allele preferred ASB" & ASB_F1b == "C24 allele preferred ASB" ~ "F1a=Col, F1b=C24",
+    ASB_F1a == "C24 allele preferred ASB" & ASB_F1b == "Col allele preferred ASB" ~ "F1a=C24, F1b=Col",
+    ASB_F1a == "C24 allele preferred ASB" & ASB_F1b == "C24 allele preferred ASB" ~ "Same prediction:C24"
+  ))
+
+# Scatter plot with custom colors for ASB_combined
+ASB1= ggplot(unique_AR_shared, aes(x = log2AR_F1a, y = log2AR_F1a)) +
+  geom_smooth(method = "lm", color = "gray", linetype = "dashed", size=0.2, se = FALSE) +
+  geom_point(aes(color = ASB_combined), size = 1.5, alpha = 0.3) +
+  labs(
+    title = "Scatter Plot of Allelic Ratio for Shared F1a/F1b ASB events",
+    x = "log2 AR for F1a",
+    y = "log2 AR for F1b",
+    color = "Predicted ASB Status"
+  ) +
+  theme_minimal() +
+  theme(
+    text = element_text(size = 10),
+    plot.title = element_text(hjust = 0.5),
+    legend.position = "top"
+  ) +
+  scale_color_manual(values = c(
+    "Same Prediction:Col" = "blue", 
+    "F1a=Col, F1b=C24" = "black", 
+    "F1a=C24, F1b=Col" = "purple", 
+    "Same prediction:C24" = "red"
+  ))
+
+ASB1
+png(filename = "./results/log2_AR_Shared_F1a_F1b.png", width = 1200, height = 1200, res= 200)
+ASB1
+dev.off()
+```
+
+```{r}
+#plot the scatter plot with the updated ratios
+library(ggplot2)
+
+#create a new column to combine ASB_F1a and ASB_F1b status
+unique_AR_shared = unique_AR_shared %>%
+  mutate(ASB_combined = case_when(
+    ASB_F1a == "Col allele preferred ASB" & ASB_F1b == "Col allele preferred ASB" ~ "Same Prediction:Col",
+    ASB_F1a == "Col allele preferred ASB" & ASB_F1b == "C24 allele preferred ASB" ~ "F1a=Col, F1b=C24",
+    ASB_F1a == "C24 allele preferred ASB" & ASB_F1b == "Col allele preferred ASB" ~ "F1a=C24, F1b=Col",
+    ASB_F1a == "C24 allele preferred ASB" & ASB_F1b == "C24 allele preferred ASB" ~ "Same prediction:C24"
+  ))
+
+# Scatter plot with custom colors for ASB_combined
+ASB2= ggplot(unique_AR_shared, aes(x = Corrected.AR_F1a, y = Corrected.AR_F1b)) +
+  geom_smooth(method = "lm", color = "gray", linetype = "dashed", se = FALSE) +
+  geom_point(aes(color = ASB_combined), size = 1, alpha = 0.3) +
+  labs(
+    title = "Scatter Plot of Corrected Allelic Ratio for Shared F1a/F1b ASB events",
+    x = "Corrected AR for F1a",
+    y = "Corrected AR for F1b",
+    color = "Predicted ASB Status"
+  ) +
+  theme_minimal() +
+  theme(
+    text = element_text(size = 10),
+    plot.title = element_text(hjust = 0.5),
+    legend.position = "top"
+  ) +
+  scale_color_manual(values = c(
+    "Same Prediction:Col" = "blue", 
+    "F1a=Col, F1b=C24" = "black", 
+    "F1a=C24, F1b=Col" = "purple", 
+    "Same prediction:C24" = "red"
+  ))
+
+ASB2
+png(filename = "./results/Corrected_AR_Shared_F1a_F1b.png", width = 1200, height = 1200, res= 200)
+ASB2
+dev.off()
+
+```
+

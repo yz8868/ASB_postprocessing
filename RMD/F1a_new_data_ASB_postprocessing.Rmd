@@ -1,0 +1,691 @@
+---
+title: "ASB_motif for f1a new data RMD with small edits (OG code from Yilin Zhou) by Aurelia"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r}
+#set CRAN mirror to avoid installation errors
+options(repos = c(CRAN = "https://cran.rstudio.com/"))
+
+install.packages("ggpubr")
+install.packages('cli')
+```
+
+```{r}
+library(cowplot)
+library(dplyr)
+library(tidyr)
+library(tidyverse)
+library(ggplot2) 
+library(ggpubr)
+library(ggVennDiagram)
+library(universalmotif)
+library(Biostrings)
+library(RColorBrewer)
+```
+
+```{r}
+#reading in Bayes report from pipeline 
+df_C24SPL9_F1a_F1aRAF = read.table("./data/C24SPL9_F1a_F1aRAF.bayes_report.csv", header = TRUE)
+df_ColSPL9_F1a_F1aRAF = read.table("./data/ColSPL9_F1a_F1aRAF.bayes_report.csv", header = TRUE)
+head(df_ColSPL9_F1a_F1aRAF)
+head(df_C24SPL9_F1a_F1aRAF)
+```
+
+```{r}
+# Read in bayes reports and filter for the intersection of consistent ASB in 2 TFs. Also save gCol preferred and gC24 preferred ASB for later analysis.
+
+#filtering both Col SPL9 and C24 SPL9  bayes reports such that they have same variation IDs, for each report, only keeping entries where both reports have that variationID  
+F1a_pre_shared_list = intersect(df_ColSPL9_F1a_F1aRAF$ID, df_C24SPL9_F1a_F1aRAF$ID)
+df_C24SPL9_F1a_F1aRAF = df_C24SPL9_F1a_F1aRAF %>% filter(ID %in% F1a_pre_shared_list)
+df_ColSPL9_F1a_F1aRAF = df_ColSPL9_F1a_F1aRAF %>% filter(ID %in% F1a_pre_shared_list)
+
+ColSPL9_F1a_F1aRAF_Col_ID = (df_ColSPL9_F1a_F1aRAF %>% filter(isASB == TRUE & Bayes_sig_A == 1))$ID #Col ASBfor ColTF
+ColSPL9_F1a_F1aRAF_C24_ID = (df_ColSPL9_F1a_F1aRAF %>% filter(isASB == TRUE & Bayes_sig_B == 1))$ID #C24 ASBfor ColTF
+C24SPL9_F1a_F1aRAF_Col_ID = (df_C24SPL9_F1a_F1aRAF %>% filter(isASB == TRUE & Bayes_sig_A == 1))$ID #Col ASBfor C24TF
+C24SPL9_F1a_F1aRAF_C24_ID = (df_C24SPL9_F1a_F1aRAF %>% filter(isASB == TRUE & Bayes_sig_B == 1))$ID #C24 ASBfor C24TF
+
+
+F1a_ColASB_consistent_list = intersect(ColSPL9_F1a_F1aRAF_Col_ID, C24SPL9_F1a_F1aRAF_Col_ID) #only extracting IDs where both Col/C24 SPL9 is ASB for Col 
+write(F1a_ColASB_consistent_list, "./results/F1a_ColASB_consistent_list.txt")
+
+F1a_C24ASB_consistent_list = intersect(ColSPL9_F1a_F1aRAF_C24_ID, C24SPL9_F1a_F1aRAF_C24_ID) #only extracting IDs where both Col/C24 SPL9 is ASB for C24 
+write(F1a_C24ASB_consistent_list, "./results/F1a_C24ASB_consistent_list.txt")
+
+F1a_shared_list = union(F1a_ColASB_consistent_list, F1a_C24ASB_consistent_list) #list of unique ASB VariationID for either Col or C24, union= take both lists + combine, and rm duplicates   
+head(F1a_shared_list)
+
+```
+
+```{r}
+# Generate the bed files for ASB assoociated variations in both coordinates, add 100 bp flanking region each side. Edited for F1a new data. Basically overlapping coordinate positions from either Col or C24 reference genome that have ASB binding events for either Col or C24 genome   
+
+df_Col_vari_bed = read.table("./data/Col_ref_C24_Q_het.bed")
+df_Col_vari_bed = df_Col_vari_bed %>%
+  filter(V9 %in% F1a_shared_list) %>%  #subsetting het file entries that have the VariationID from F1a_shared_list created above 
+  select(c(V1, V2, V3, V9)) %>% #only want chr #, start/end position in reference (Col) and VariationID 
+  mutate(V2 = V2 - 100, V3 = V3 + 100) #extending flanking region by 100 on each side, since syri/het is 1 based and includes either start/end positions, no need to adjust 
+head(df_Col_vari_bed)
+write.table(df_Col_vari_bed, file = "./data/F1a_shared_ASB_Col_ref_C24_Q.extended.bed", sep = "\t", row.names = FALSE, col.names = FALSE, quote = FALSE)
+
+df_C24_vari_bed = read.table("./data/with_prefix_C24_ref_Col_Q_het.bed") #doing the same but using C24 as reference 
+df_C24_vari_bed = df_C24_vari_bed %>%
+  filter(V9 %in% F1a_shared_list) %>%
+  select(c(V1, V2, V3, V9)) %>%
+  mutate(V2 = V2 - 100, V3 = V3 + 100) #extending flanking region by 100 bp on each side -->increase robustness, broader region/window may help with nonspecific discoveries, higher specificity= better for downstream analysis 
+head(df_C24_vari_bed)
+write.table(df_C24_vari_bed, file = "./data/F1a_shared_ASB_C24_ref_Col_Q.extended.bed", sep = "\t", row.names = FALSE, col.names = FALSE, quote = FALSE)
+```
+
+```{r}
+# Get fasta with bedtools getfasta -name
+```
+
+
+```{r}
+# Read in motif models and fasta from last step. F1a version
+
+Col_mapped_ColSPL9_F1a_meme = read_meme("./data/meme/Col_meme/ColSPL9_F1a-B.meme.txt")[[1]]
+Col_mapped_ColSPL9_F1a_meme
+Col_mapped_ColSPL9_F1a_meme["bkg"]
+
+Col_mapped_ColSPL9_F1a_fasta = readDNAStringSet("./data/F1a_shared_ASB_gCol.fasta", format="fasta", seek.first.rec=FALSE, use.names=TRUE)
+C24_mapped_ColSPL9_F1a_fasta = readDNAStringSet("./data/F1a_shared_ASB_gC24.fasta", format="fasta", seek.first.rec=FALSE, use.names=TRUE)
+Col_mapped_ColSPL9_F1a_fasta
+```
+
+```{r}
+res_Col_mapped_ColSPL9_F1a = scan_sequences(Col_mapped_ColSPL9_F1a_meme, Col_mapped_ColSPL9_F1a_fasta,
+                     threshold = -Inf, threshold.type = "logodds.abs", RC = TRUE) #RC= check if reverse comp of DNA seq in fasta has motif, no threshold since -infinity, since it can go +/-, use the absolute as threshold 
+res_Col_mapped_ColSPL9_F1a = as.data.frame(res_Col_mapped_ColSPL9_F1a)
+head(res_Col_mapped_ColSPL9_F1a)
+
+#here sequence.i = sequence index, start/stop positions derived from fasta sequence
+# ie CPG1059::chr1:29300608-29305747 has an index of 720, the start/stop is the start/end position of where the match was found in the sequence (1 based system since both fasta and the syri/het file= 1 based)
+```
+
+```{r}
+# Scan the fasta with motif PWM bp by bp, both + and - strand. For the window containing the variation, select the highest score as the final score for that variation ID. Compare the score on gCol and gC24 by merging by variation ID. Where higher score= scanned sequence is a stronger match to the motif 
+
+res_Col_mapped_ColSPL9_F1a = scan_sequences(Col_mapped_ColSPL9_F1a_meme, Col_mapped_ColSPL9_F1a_fasta,
+                     threshold = -Inf, threshold.type = "logodds.abs", RC = TRUE) #RC= check if reverse comp of DNA seq in fasta has motif, no threshold since -infinity, since it can go +/-, use the absolute as threshold to consider both strong positive/negative scores 
+res_Col_mapped_ColSPL9_F1a = as.data.frame(res_Col_mapped_ColSPL9_F1a)
+res_Col_mapped_ColSPL9_F1a = res_Col_mapped_ColSPL9_F1a %>%
+  mutate(tempstart = pmin(start, stop), tempstop = pmax(start, stop)) %>% #make 2 new cols, extracting the start/stop position of each found motif match, need to find min/max since rev complement changes the start/stop 
+  mutate(start = tempstart, stop = tempstop) %>% #essentially if RC, then switch the start/stop values such that start is always smaller than stop, using values from temp start/stop
+  separate(sequence, into=c('ID','bed_chr', 'bed_start','bed_stop'),sep="::|:|-") %>% #separate sequence col into 4 cols since 1 entry= "CPG1059::chr1:29300608-29305747"
+  mutate_at(c('bed_start', 'bed_stop'), as.numeric) %>% #need to do this so you can do subtraction 
+  mutate(vari_end = bed_stop - bed_start - 100) %>% #this is to obtain boundary value for how big the search space is from bed file (?)
+  select(c(motif, ID, start, stop, score, strand, match, vari_end)) %>% #only want these cols
+  group_by(ID, start) %>% #group entries with the same ID and start values and then only keep 1 from each group with highest score, if everything=same for those entries, keep all 
+  slice_max(score, n = 1) %>%
+  filter(!(stop < 99 | start > vari_end)) %>% #REMOVE rows that satisfy this requirement, basically these row have motifs found too close to the boundaries that we have already extended, so not high confidence in these (?)
+  select(-vari_end) %>% # rm vari_end col, no use for it 
+  group_by(ID) %>%
+  slice_max(score, n = 1) #only keep entries from a group with highest motif score, if tied, keep all tied entries
+```
+
+```{r}
+head(res_Col_mapped_ColSPL9_F1a)
+```
+
+```{r}
+#doing the same except scanning motifs derived from Col-0 ref genome with ColSPL9 TF with fasta file containing C24 predicted ASB events with associated VariationID 
+res_C24_mapped_ColSPL9_F1a = scan_sequences(Col_mapped_ColSPL9_F1a_meme, C24_mapped_ColSPL9_F1a_fasta,
+                     threshold = -Inf, threshold.type = "logodds.abs", RC = TRUE)
+res_C24_mapped_ColSPL9_F1a = as.data.frame(res_C24_mapped_ColSPL9_F1a)
+res_C24_mapped_ColSPL9_F1a = res_C24_mapped_ColSPL9_F1a %>%
+  mutate(tempstart = pmin(start, stop), tempstop = pmax(start, stop)) %>% 
+  mutate(start = tempstart, stop = tempstop) %>%
+  separate(sequence, into=c('ID','bed_chr', 'bed_start','bed_stop'),sep="::|:|-") %>%
+  mutate_at(c('bed_start', 'bed_stop'), as.numeric) %>%
+  mutate(vari_end = bed_stop - bed_start - 100) %>%
+  select(c(motif, ID, start, stop, score, strand, match, vari_end)) %>%
+  group_by(ID, start) %>%
+  slice_max(score, n = 1) %>%
+  filter(!(stop < 99 | start > vari_end)) %>% 
+  select(-vari_end) %>%
+  group_by(ID) %>%
+  slice_max(score, n = 1)
+```
+
+
+```{r}
+head(res_C24_mapped_ColSPL9_F1a)
+```
+
+```{r}
+res_merged = merge(res_Col_mapped_ColSPL9_F1a, res_C24_mapped_ColSPL9_F1a, by = "ID") #joining both dfs by variationID, where Col_mapped is first half of cols(x) and C24_mapped= 2nd half of cols (y), outputs the highest motif match for each variationID group
+#head(res_merged)
+```
+
+```{r}
+write.csv(res_merged, "./results/F1a_res_merged.csv", row.names = FALSE, quote = FALSE)
+```
+
+```{r}
+# Scatterplot of motif scores. Each dot is a variation ID. x-axis is the score on Col genome, y-axis is the score on C24 genome. Within the IDs that has motif discovered in >=1 genome, if the motif is found on Col genome, then the variation is usually associated with Col-preferred ASB. Edited for F1a data. 
+
+res_merged = read.csv("./results/F1a_res_merged.csv")
+F1a_ColASB_consistent_list = readLines("./results/F1a_ColASB_consistent_list.txt") #extracted IDs where both Col/C24 SPL9 is predicted ASB for Col
+F1a_C24ASB_consistent_list = readLines("./results/F1a_C24ASB_consistent_list.txt") #extracted IDs where both Col/C24 SPL9 is predicted ASB for C24 
+
+res_merged = res_merged %>%
+  mutate(ASB = case_when(ID %in% F1a_ColASB_consistent_list ~ "Col allele preferred ASB",
+                         ID %in% F1a_C24ASB_consistent_list ~ "C24 allele preferred ASB")) #if variationID found in ColASB list, then mark as ASB for Col, if in both, still mark for Col 
+head(res_merged)
+
+
+p1 = ggplot(res_merged, aes(x = score.x, y = score.y, col = ASB)) + #color based on ASB status, x= results from Col mapping, y= results from C24 mapping
+  geom_point(size = 1, alpha = 0.5) +
+  geom_abline(slope = 1, intercept = 0, linetype="dashed") +
+  xlim(-40, 20) +
+  ylim(-40, 20) +
+  labs(title = "Variation-associated ASB Motif Scores (All)",
+       x = "Motif score (logodds) in Col genome",
+       y = "Motif score (logodds) in C24 genome") +
+  theme_cowplot() +
+  theme(legend.position="top")
+p1
+ggsave("./results/motif_score_all_f1a.png", p1, height = 6, width = 12)
+
+res_merged2 = res_merged %>%
+  filter(score.x > 0 | score.y > 0) #ensuring motif score is greater than 0
+p2 = ggplot(res_merged2, aes(x = score.x, y = score.y, col = ASB)) +
+  geom_point(size = 1, alpha = 0.5) +
+  geom_abline(slope = 1, intercept = 0, linetype="dashed") +
+  xlim(-40, 20) +
+  ylim(-40, 20) +
+  labs(title = "Variation-associated ASB Motif Scores (Enriched in >=1 genome)",
+       x = "Motif score (logodds) in Col genome",
+       y = "Motif score (logodds) in C24 genome") +
+  theme_cowplot() +
+  theme(legend.position="top")
+p2
+ggsave("./results/motif_score_f1a.png", p2, height = 6, width = 12)
+```
+
+```{r}
+# Filter for variations with motif discovered for Col_ASB events 
+
+df_vari = read.table("./data/Col_ref_C24_Q_het.bed")
+names(df_vari) = c("Col_chr", "Col_start", "Col_end", "Col_seq",
+                  "C24_seq", "C24_chr", "C24_start", "C24_end", "ID") #renaming the cols for the het file
+
+#this will obtain a df containing the Col chr, start, end, and variationID of predicted ASB binding events for only Col that have motifs found
+df_ASB_vari_all = res_merged %>%
+  dplyr::inner_join(df_vari, by = "ID") %>% #inner join = final_df has cols from both dfs, but only if the IDs match 
+  filter(ASB == "Col allele preferred ASB") %>%
+  select(c("Col_chr", "Col_start", "Col_end", "ID"))
+head(df_ASB_vari_all)
+
+
+# Filter for variations with motif discovered for either Col or C24 ASB events that have motif score >9 
+res_merged3 = res_merged %>%
+  filter(score.x > 9 | score.y > 9) # want motifs scores that are higher than 9, since that means higher match of the fasta sequences to the motifs
+
+#obtaining combined df of higher threshold motif score (res_merge3) + the het file with renamed cols based on variationID
+#df will have entries of either Col/C24 ASB events with a higher motif score threshold  
+df_ASB_vari_in_motif = res_merged3 %>%
+  dplyr::inner_join(df_vari, by = "ID")
+head(df_ASB_vari_in_motif)
+
+#here subsetting the df from above to only contain the following cols 
+df_ASB_vari_in_motif = df_ASB_vari_in_motif %>%
+  select(c("Col_chr", "Col_start", "Col_end", "ID", "ASB"))
+
+#now creating separate lists for either Col or C24 ASB events that have motifs scores higher than 9 for either Col or C24 ASB events 
+df_ASB_vari_in_motif_Col = df_ASB_vari_in_motif %>% #changed from gC24ASB or gColASB to the following, so that ASB col is more descriptive 
+  filter(ASB == "Col allele preferred ASB")
+
+df_ASB_vari_in_motif_C24 = df_ASB_vari_in_motif %>%
+  filter(ASB == "C24 allele preferred ASB")
+```
+
+```{r}
+p3 = ggplot(res_merged3, aes(x = score.x, y = score.y, col = ASB)) +
+  geom_point(size = 1, alpha = 0.5) +
+  geom_abline(slope = 1, intercept = 0, linetype="dashed") +
+  xlim(-40, 20) +
+  ylim(-40, 20) +
+  labs(title = "Filtered Variation-associated ASB Motif Scores >9 (Enriched in >=1 genome)",
+       x = "Motif score (logodds) in Col genome",
+       y = "Motif score (logodds) in C24 genome") +
+  theme_cowplot() +
+  theme(legend.position="top")
+p3
+ggsave("./results/motif_score_9_up_f1a.png", p3, height = 6, width = 12)
+```
+
+```{r}
+# Gene association
+#diffloop package was removed with Bioconductor 3.16 release, I am currently using 3.18 version of Bioconductor 
+#it was used to rm 'chr' in seqlevels 
+# replace: peak_gr = diffloop::rmchr(peak_gr)
+    # https://rdrr.io/github/aryeelab/diffloop/man/rmchr.html --> documentation on how/why it was used 
+# with: seqlevels(peak_gr) <- gsub("chr", "", seqlevels(peak_gr))
+
+library(ChIPseeker)
+library(rtracklayer)
+library(AnnotationDbi)
+library(dplyr)
+#library(diffloop)
+
+# TAIR10 gene annotation database file, transcript database 
+txdb28_file = "./data/TxDb.Athaliana.BioMart.plantsmart28_protein_coding"
+txdb28 = loadDb(txdb28_file)
+GenomeInfoDb::seqlevels(txdb28)
+
+# allASB (w/o motif)
+ #creating empty seqinfo object 
+genome = Seqinfo(genome = NA_character_)
+
+#converting the df into GRanges object (tores info like chr name, start/end position, strand info), specifying Col_chr from the df to note where chromosome name is coming from
+peak_gr = makeGRangesFromDataFrame(df_ASB_vari_in_motif,
+                                   keep.extra.columns = TRUE,#keep extra cols (ie ID, ASB) as metadata, once converted back to df, those cols get added back 
+                                   ignore.strand = TRUE, #do this to ignore strand info, df will have * in strand col  
+                                   seqinfo = NULL, #null to allow obj to function on default, aka all needed info can get obtained from the df_ASB_vari_in_motif
+                                   seqnames.field = "Col_chr") 
+
+seqlevels(peak_gr)= gsub("chr", "", seqlevels(peak_gr)) #replace instances of chr with space, only have # instead of chr#, need to do this since txdb28 uses only # for chr name
+peak_gr
+
+#using annotatePeak to annotate the GRanges object created from the df of ASB events/associated VariationID + sequence info that have motifs with scores >9 with the TAIR10 transcript database
+csannot = annotatePeak(peak_gr,
+                       TxDb=txdb28,
+                       tssRegion=c(-1000, 1000), #defining  promoter region as 1000 bases upstream/downstream of the TSS
+                       verbose=TRUE)
+all_csannot_df = as.data.frame(csannot) %>%
+  dplyr::filter(grepl('Promoter', annotation)) #after converting the GRange obj into df, only keep entries where annotation col= promoter 
+
+head(all_csannot_df)
+
+#creating list of all unique genes found to be associated with ASB for either Col or C24 that has a motif score >9 and that motif is found to be in the promoter region
+all_gene_list = unique(all_csannot_df$geneId) 
+ 
+
+
+# doing same thing as above but for gColASB
+#end goal= create list of genes that are associated with predicted ASB events in Col genome with motifs found in promoter region and a score>9
+genome = Seqinfo(genome = NA_character_)
+peak_gr = makeGRangesFromDataFrame(df_ASB_vari_in_motif_Col,
+                                   keep.extra.columns = TRUE,
+                                   ignore.strand = TRUE,
+                                   seqinfo = NULL,
+                                   seqnames.field = "Col_chr")
+
+seqlevels(peak_gr) = gsub("chr", "", seqlevels(peak_gr))
+peak_gr
+
+csannot_col = annotatePeak(peak_gr,
+                       TxDb=txdb28,
+                       tssRegion=c(-1000, 1000),
+                       verbose=TRUE)
+gCol_csannot_df = as.data.frame(csannot_col) %>%
+  dplyr::filter(grepl('Promoter', annotation))
+
+head(gCol_csannot_df)
+ColASB_gene_list = unique(gCol_csannot_df$geneId)
+
+
+
+
+# doing same thing as above but for gC24ASB
+#end goal= create list of genes that are associated with predicted ASB events in C24 genome with motifs found in promoter region and a score>9
+genome = Seqinfo(genome = NA_character_)
+peak_gr = makeGRangesFromDataFrame(df_ASB_vari_in_motif_C24,
+                                   keep.extra.columns = TRUE,
+                                   ignore.strand = TRUE,
+                                   seqinfo = NULL,
+                                   seqnames.field = "Col_chr") #can use Col_chr since in theory should be the same chr# regardless if ASB event is in Col or C24 
+
+seqlevels(peak_gr) = gsub("chr", "", seqlevels(peak_gr))
+peak_gr
+
+csannot = annotatePeak(peak_gr,
+                       TxDb=txdb28,
+                       tssRegion=c(-1000, 1000),
+                       verbose=TRUE)
+gC24_csannot_df = as.data.frame(csannot) %>%
+  dplyr::filter(grepl('Promoter', annotation))
+
+head(gC24_csannot_df)
+C24ASB_gene_list = unique(gC24_csannot_df$geneId)
+```
+
+```{r}
+#installing org.At.tair.db for go analysis 
+
+# if (!require("BiocManager", quietly = TRUE))
+#     install.packages("BiocManager")
+
+# BiocManager::install("org.At.tair.db")
+
+
+#installing clusterProfiler for go analysis
+# if (!require("BiocManager", quietly = TRUE))
+#     install.packages("BiocManager")
+#
+# BiocManager::install("clusterProfiler")
+
+```
+
+
+```{r}
+# GO analysis
+library("org.At.tair.db")
+library(clusterProfiler)
+
+columns(org.At.tair.db) #check cols in this tair database 
+
+#GO terms associated with list of genes that are associated with predicted ASB events in Col genome with motifs found in promoter region and a score>9
+vari_GO = enrichGO(gene = ColASB_gene_list,
+                  keyType = "TAIR",
+                  OrgDb = "org.At.tair.db",
+                  ont = "ALL", #want all Biological Process (BP), Molecular Function (MF), and Cellular Component (CC) 
+                  pAdjustMethod = "none",
+                  pvalueCutoff = 0.05,
+                  readable = TRUE) #when true, input gene IDs will be converted to gene symbols aka AT4G28300 vs FLOE1
+
+df_vari_GO = data.frame(vari_GO)
+head(df_vari_GO)
+nrow(df_vari_GO)
+
+dotplot(vari_GO, showCategory=10)
+
+svg("./results/consistent_ASBvari_in_motif_GO_F1a_Col_ASB.svg", width=8, height=9)
+dotplot(vari_GO, showCategory=10)
+dev.off()
+```
+
+```{r}
+#GO anaylsis for C24 list 
+# GO analysis
+# library("org.At.tair.db")
+# library(clusterProfiler)
+
+#GO terms associated with list of genes that are associated with predicted ASB events in C24 genome with motifs found in promoter region and a score>9
+vari_GO_C24_ASB = enrichGO(gene = C24ASB_gene_list,
+                  keyType = "TAIR",
+                  OrgDb = "org.At.tair.db",
+                  ont = "ALL", #want all Biological Process (BP), Molecular Function (MF), and Cellular Component (CC) 
+                  pAdjustMethod = "none",
+                  pvalueCutoff = 0.05,
+                  readable = TRUE) #when true, input gene IDs will be converted to gene symbols aka AT4G28300 vs FLOE1
+
+df_vari_GO_C24 = data.frame(vari_GO_C24_ASB)
+head(df_vari_GO_C24)
+nrow(df_vari_GO_C24)
+
+dotplot(vari_GO_C24_ASB, showCategory=10)
+
+svg("./results/consistent_ASBvari_in_motif_GO_F1a_C24_ASB.svg", width=8, height=9)
+dotplot(vari_GO_C24_ASB, showCategory=10)
+dev.off()
+```
+
+```{r}
+# Construct the TPM dataframe.
+# here gene expression levels = normalized to account for sequencing depth/gene length,log2-transformed =stabilize variance, make data more symmetric, allow for easier interpretation (aka log2fc 1= double expression, -1 = half expression)
+#TPM= good because expression values are comparable across samples
+
+# AGI code= Arabidopsis gene initiative (AGI) gene locus identifier based on the Araport11 genome annotation
+#log2-transformed TPM intensities for each tissue atlas sample
+
+#data from this paper: https://www.nature.com/articles/s41586-020-2094-2#Sec43
+library(readxl)
+df_TPM = read_excel("./data/41586_2020_2094_MOESM4_ESM.xlsx", sheet = "gene expression", skip = 1)
+df_TPM = df_TPM %>%
+  select(contains(c("AGI code", "TPM_"))) %>%
+  select(-"AGI code isoform") #don't wat isoform col 
+head(df_TPM) # df of AT genes and its mRNA abundance in different arabidopsis tissue types 
+write.csv(df_TPM, "./data/TPM.csv", row.names = FALSE, quote = FALSE)
+```
+
+```{r}
+# Select target gene's TPM
+
+df_TPM = read.csv("./data/TPM.csv")
+head(df_TPM)
+
+#obtain df of genes that are associated with predicted ASB events in Col genome with motifs found in promoter region and a score>9 and its mRNA abundance by tissue type 
+df_TPM_ColASB = df_TPM %>%
+  filter(AGI.code %in% ColASB_gene_list) %>%
+  column_to_rownames(var = "AGI.code")
+head(df_TPM_ColASB)
+
+#obtain df of genes that are associated with predicted ASB events in C24 genome with motifs found in promoter region and a score>9 and its mRNA abundance by tissue type
+df_TPM_C24ASB = df_TPM %>%
+  filter(AGI.code %in% C24ASB_gene_list) %>%
+  column_to_rownames(var = "AGI.code")
+head(df_TPM_C24ASB)
+
+
+#to see what tissues are SPL9 TFs expressed in 
+df_TPM_SPL9 = df_TPM %>%
+  filter(AGI.code == "AT2G42200") %>%
+  column_to_rownames(var = "AGI.code")
+```
+
+```{r}
+# #installing ComplexHeatmap for heatmap creation
+# if (!require("BiocManager", quietly = TRUE))
+#     install.packages("BiocManager")
+# 
+# BiocManager::install("ComplexHeatmap")
+```
+
+```{r}
+# Heatmap of target gene tissue expression
+
+library(ComplexHeatmap)
+
+
+#creating heatmap of genes that are associated with predicted ASB events in Col genome with motifs found in promoter region and a score>9 and its mRNA abundance by tissue type 
+mat_TPM_ColASB = t(as.matrix(df_TPM_ColASB)) #need to transpose matrix so that each row= tissue type and col=AGI code 
+mat_TPM_ColASB2 = df_TPM_ColASB %>%
+  mutate_all(., ~replace_na(., 0)) %>% #replace missing values with 0
+  as.matrix()
+
+column_hc_Col = hclust(dist(mat_TPM_ColASB2)) #hierarchical clustering on the distance matrix(pairwise distance), complete clustering=maximum distance between clusters
+column_dend_Col = as.dendrogram(column_hc_Col)
+# row_hc_Col = hclust(dist(t(mat_TPM_ColASB2)))
+# row_dend_Col = as.dendrogram(row_hc_Col) #done to cluster rows 
+
+hmap_Col = Heatmap(mat_TPM_ColASB,
+                   col = brewer.pal(9, 'YlOrRd'),
+                   cluster_columns = column_dend_Col, #only col (AGI codes clustered)
+                   cluster_rows = FALSE, #rows/tissue not clustered, appear in order displayed in matrix
+                   column_title = "gCol TPM Matrix")
+
+
+
+#heatmap for df of genes that are associated with predicted ASB events in C24 genome with motifs found in promoter region and a score>9 and its mRNA abundance by tissue type 
+mat_TPM_C24ASB = t(as.matrix(df_TPM_C24ASB))
+mat_TPM_C24ASB2 = df_TPM_C24ASB %>%
+  mutate_all(., ~replace_na(., 0)) %>%
+  as.matrix()
+
+column_hc_C24 = hclust(dist(mat_TPM_C24ASB2))
+column_dend_C24 = as.dendrogram(column_hc_C24)
+row_hc_C24 = hclust(dist(t(mat_TPM_C24ASB2)))
+row_dend_C24 = as.dendrogram(row_hc_C24)
+
+hmap_C24 = Heatmap(mat_TPM_C24ASB,
+                   col = brewer.pal(9, 'YlOrRd'),
+                   cluster_columns = column_dend_C24,
+                   cluster_rows = FALSE,
+                   column_title = "gC24 TPM Matrix")
+
+hmap_SPL9 = Heatmap(t(as.matrix(df_TPM_SPL9)),col = brewer.pal(9, 'YlOrRd'),
+                   cluster_columns = FALSE,
+                   cluster_rows = FALSE,
+                   column_title = "SPL9 TPM Matrix")
+
+#combine all 3 heatmaps 
+hmap_Col + hmap_C24 + hmap_SPL9
+
+png("./results/gCol_F1a_ASB_TPM_heatmap.png", width = 25, height = 10, units = "in", res = 72)
+hmap_Col + hmap_SPL9
+dev.off()
+
+png("./results/gC24_F1a_ASB_TPM_heatmap.png", width = 25, height = 10, units = "in", res = 72)
+hmap_C24 + hmap_SPL9
+dev.off()
+```
+
+```{r}
+#extracting the iBAQ information, aka info about 
+#intensity-based absolute quantification
+#protein abundance estimation 
+
+library(readxl)
+
+df_iBAQ = read_excel("./data/41586_2020_2094_MOESM4_ESM.xlsx", sheet = "gene expression", skip = 1)
+df_iBAQ = df_iBAQ %>%
+  select(contains(c("AGI code", "iBAQ_"))) %>%
+  select(-"AGI code isoform")
+df_iBAQ
+write.csv(df_iBAQ, "./data/iBAQ.csv", row.names = FALSE, quote = FALSE)
+```
+
+```{r}
+# Select target gene's TPM
+
+df_iBAQ = read.csv("./data/iBAQ.csv")
+head(df_iBAQ)
+
+df_iBAQ_ColASB = df_iBAQ %>%
+  filter(AGI.code %in% ColASB_gene_list) %>%
+  column_to_rownames(var = "AGI.code")
+df_iBAQ_C24ASB = df_iBAQ %>%
+  filter(AGI.code %in% C24ASB_gene_list) %>%
+  column_to_rownames(var = "AGI.code")
+
+
+# tells us protein abundance for genes that were linked to an predicted ASB event for either Col or C24
+head(df_iBAQ_ColASB)
+head(df_iBAQ_C24ASB)
+
+
+#to see what tissues are SPL9 TFs expressed in 
+df_iBAQ_SPL9 = df_iBAQ %>%
+  filter(AGI.code == "AT2G42200") %>%
+  column_to_rownames(var = "AGI.code")
+  
+```
+
+```{r}
+# Heatmap of target protein expression for different tissues
+
+#creating heatmap of genes that are associated with predicted ASB events in Col genome with motifs found in promoter region and a score>9 and its protein abundance by tissue type 
+mat_iBAQ_ColASB = t(as.matrix(df_iBAQ_ColASB)) #need to transpose matrix so that each row= tissue type and col=AGI code 
+mat_iBAQ_ColASB2 = df_iBAQ_ColASB %>%
+  mutate_all(., ~replace_na(., 0)) %>% #replace missing values with 0
+  as.matrix()
+
+column_hc_Col_ibaq = hclust(dist(mat_iBAQ_ColASB2)) #hierarchical clustering on the distance matrix(pairwise distance), complete clustering=maximum distance between clusters
+column_dend_Col_ibaq = as.dendrogram(column_hc_Col_ibaq)
+# row_hc_Col = hclust(dist(t(mat_TPM_ColASB2)))
+# row_dend_Col = as.dendrogram(row_hc_Col) #done to cluster rows 
+
+hmap_Col_iBAQ = Heatmap(mat_iBAQ_ColASB,
+                   col = brewer.pal(9, 'YlGnBu'),
+                   cluster_columns = column_dend_Col_ibaq, #only col (AGI codes clustered)
+                   cluster_rows = FALSE, #rows/tissue not clustered, appear in order displayed in matrix
+                   column_title = "gCol iBAQ Matrix")
+
+
+
+#heatmap for df of genes that are associated with predicted ASB events in C24 genome with motifs found in promoter region and a score>9 and its protein abundance by tissue type 
+mat_iBAQ_C24ASB = t(as.matrix(df_iBAQ_C24ASB))
+mat_iBAQ_C24ASB2 = df_iBAQ_C24ASB %>%
+  mutate_all(., ~replace_na(., 0)) %>%
+  as.matrix()
+
+column_hc_C24_iBAQ = hclust(dist(mat_TPM_C24ASB2))
+column_dend_C24_iBAQ = as.dendrogram(column_hc_C24_iBAQ)
+# row_hc_C24 = hclust(dist(t(mat_TPM_C24ASB2)))
+# row_dend_C24 = as.dendrogram(row_hc_C24)
+
+hmap_C24_iBAQ = Heatmap(mat_iBAQ_C24ASB,
+                   col = brewer.pal(9, 'YlGnBu'),
+                   cluster_columns = column_dend_C24_iBAQ,
+                   cluster_rows = FALSE,
+                   column_title = "gC24 iBAQ Matrix")
+
+hmap_SPL9_iBAQ = Heatmap(t(as.matrix(df_iBAQ_SPL9)),col = brewer.pal(9, 'YlGnBu'),
+                   cluster_columns = FALSE,
+                   cluster_rows = FALSE,
+                   column_title = "SPL9 iBAQ Matrix")
+
+#combine all 3 heatmaps 
+hmap_Col_iBAQ + hmap_C24_iBAQ + hmap_SPL9_iBAQ
+
+png("./results/gCol_F1a_ASB_iBAQ_heatmap.png", width = 25, height = 10, units = "in", res = 72)
+hmap_Col_iBAQ + hmap_SPL9_iBAQ
+dev.off()
+
+png("./results/gC24_F1a_ASB_iBAQ_heatmap.png", width = 25, height = 10, units = "in", res = 72)
+hmap_C24_iBAQ + hmap_SPL9_iBAQ
+dev.off()
+```
+
+```{r}
+#similar to Yilin's combined heatmap of TPM/iBAQ for predicted Col ASB events 
+
+combined_col_heatmap = hmap_Col %v% hmap_Col_iBAQ
+draw(combined_col_heatmap)
+
+png("./results/gCol_F1a_ASB_TPM_iBAQ_heatmap.png", width = 25, height = 12, units = "in", res = 100)
+combined_col_heatmap
+dev.off()
+
+
+#similar to Yilin's combined heatmap of TPM/iBAQ for predicted C24 ASB events 
+combined_C24_heatmap = hmap_C24 %v% hmap_C24_iBAQ
+draw(combined_C24_heatmap)
+
+png("./results/gC24_F1a_ASB_TPM_iBAQ_heatmap.png", width = 25, height = 12, units = "in", res = 100)
+combined_C24_heatmap
+dev.off()
+```
+
+```{r}
+#this csv can be used to locate the actual variation in Genome Browser to see what is the potential reason for the ASB event that occurred 
+# merge target gene location, fasta, variation information together to a final dataframe.
+
+df_Col_mapped_ColSPL9_F1a_fasta = as.data.frame(Col_mapped_ColSPL9_F1a_fasta)
+
+#make the fasta entry from SNP4458::chr1:16925-17126--> to df where each information= 1 col, aka SNP, chr1, start, end
+df_Col_mapped_ColSPL9_F1a_fasta = df_Col_mapped_ColSPL9_F1a_fasta %>%
+  rownames_to_column(var = "name") %>%
+  dplyr::rename(seq = x) %>% #change x col name to seq in fasta df
+  separate(name, into = c("ID", "vari_chr", "vari_start", "vari_end"), sep = "::|:|-") #naming the cols after separating entry into 4 cols
+head(df_Col_mapped_ColSPL9_F1a_fasta)
+
+
+#based on df of all unique genes found to be associated with ASB for either Col or C24 that has a motif score >9 and that motif is found to be in the promoter region
+df_target_gene = all_csannot_df %>%
+  select(-c(seqnames, start, end, strand, annotation, width)) #getting rid of these cols 
+head(df_target_gene)
+
+df_Col_vari_bed = read.table("./data/Col_ref_C24_Q_het.bed")
+names(df_Col_vari_bed) = c("vari_Col_chr", "vari_Col_start", "vari_Col_end", "vari_Col_seq",
+                           "vari_C24_seq", "vari_C24_chr", "vari_C24_start", "vari_C24_end", "ID")
+
+#end results = df of chr/start/end/sequence for Col and C24 reference genome for a given variationID that is associated with ASB for either Col or C24 that has a motif score >9 and that motif is found to be in the promoter region
+df_target_gene_vari = df_Col_mapped_ColSPL9_F1a_fasta %>%
+  inner_join(df_target_gene, by = "ID") %>%
+  mutate_at(c("vari_start", "vari_end"), as.numeric) %>%
+  mutate(vari_width = vari_end - vari_start - 200) %>% #how long variation is ie if SNP, variation length = 1, or if deletion/deletion, only account for how long variation is in reference to Col, not C24 
+  inner_join(df_Col_vari_bed, by = "ID")
+head(df_target_gene_vari)
+length(unique(df_target_gene_vari$geneId))
+
+write.csv(df_target_gene_vari, "./results/F1a_target_gene_with_vari_sequence.csv", row.names = FALSE, quote = FALSE)
+```
+
+
