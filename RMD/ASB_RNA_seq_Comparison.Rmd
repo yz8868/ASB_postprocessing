@@ -1,0 +1,153 @@
+---
+title: "ASB comparison with RNA-seq results"
+author: "Aurelia Li"
+date: "2024-10-28"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+#loading in the 2 DEG dfs from the DESeq2 analysis done Col/C24 and F1_Col/F1_C24 and the shared ASB genes from F1a and F1b
+DEG_F1 = read_csv("DEG_found_btwn_F1_mapped_to_Col_C24.csv")
+DEG_Col_C24 = read_csv("DEG_found_btwn_Col_C24.csv")
+F1a_F1b_union_genes= read_csv("F1a_F1b_unique_genes.csv")
+```
+
+```{r}
+cat("Number of DEGs found between Col and C24:", nrow(DEG_Col_C24), "\n")
+cat("Number of DEGs found between F1_Col and F1_C24:", nrow(DEG_F1), "\n")
+cat("Number of ASB genes shared between F1a and F1b DAP-seq experiments:", nrow(F1a_F1b_union_genes), "\n")
+```
+
+```{r}
+#checking to see how many DEGs/ASB genes are shared both both comparisons
+shared_genes_ASB_and_DEG_Col_C24= intersect(F1a_F1b_union_genes$x, DEG_Col_C24$...1)
+cat("Number of shared genes between DEGs found between Col/C24 and ASB F1a/F1b shared genes:", length(shared_genes_ASB_and_DEG_Col_C24), "\n")
+
+shared_genes_ASB_and_F1_DEGs= intersect(F1a_F1b_union_genes$x, DEG_F1$...1)
+cat("Number of shared genes between DEGs found between F1_Col/F1_C24 and ASB F1a/F1b shared genes:", length(shared_genes_ASB_and_F1_DEGs), "\n")
+```
+```{r}
+shared_genes_ASB_and_F1_DEGs
+```
+
+
+```{r}
+#here checking to see what ASB_DEGs are unique to just Col/C24 comparisons
+ASB_DEGs_only_in_Col_C24= setdiff(shared_genes_ASB_and_DEG_Col_C24,shared_genes_ASB_and_F1_DEGs) #use later for GO analysis 
+cat("Number of shared genes between DEGs unique to Col/C24 comparison and ASB F1a/F1b shared genes:", length(ASB_DEGs_only_in_Col_C24))
+```
+
+```{r}
+library("org.At.tair.db")
+library(clusterProfiler)
+
+#now conducting GO term analysis on the 2 sets of genes: This one is for 17 shared between all the datasets
+GO_shared_ASB_DEG = enrichGO(shared_genes_ASB_and_F1_DEGs,
+                  keyType = "TAIR",
+                  OrgDb = "org.At.tair.db",
+                  ont = "ALL", #want all Biological Process (BP), Molecular Function (MF), and Cellular Component (CC) 
+                  pAdjustMethod = "BH",
+                  pvalueCutoff = 0.05,
+                  readable = FALSE) #when true, input gene IDs will be converted to gene symbols aka AT4G28300 vs FLOE1
+
+df_GO_shared_ASB_DEG = data.frame(GO_shared_ASB_DEG)
+head(GO_shared_ASB_DEG)
+```
+```{r}
+dotplot(GO_shared_ASB_DEG , showCategory=10)
+```
+```{r}
+#extracting the genes found to have significant GO terms (only 7 genes were found)
+GO_term_gene_17=unique(unlist(strsplit(df_GO_shared_ASB_DEG$geneID, "/")))
+GO_term_gene_17
+
+#obtaining lfc information for the genes with enriched GO terms from DEG analysis of RNA-seq data
+subset_DEG_F1= DEG_F1[DEG_F1$...1 %in%GO_term_gene_17,]
+
+#further subset data to only include geneID and log2fc cols
+subset_DEG_F1= subset_DEG_F1[, c( "...1", "log2FoldChange")]
+
+#convert to named vector to be used by heatplot
+foldChange_vector= setNames(subset_DEG_F1$log2FoldChange, subset_DEG_F1$...1)
+foldChange_vector
+```
+
+```{r}
+heatplot(GO_shared_ASB_DEG, foldChange=foldChange_vector,showCategory = 10 )+
+  scale_fill_gradient(
+    low = "blue",  
+    high = "green", 
+    name = "foldChange"
+  ) +
+  theme(
+    legend.title = element_text(size = 12),
+    legend.text = element_text(size = 10)
+  )
+```
+
+```{r}
+#now conducting GO term analysis on the 2 sets of genes that we have separated; this is for 23 genes unique to Col/C24 found in ASB F1a/F1b genes list 
+GO_shared_ASB_DEG_Col_C24_only = enrichGO(ASB_DEGs_only_in_Col_C24,
+                  keyType = "TAIR",
+                  OrgDb = "org.At.tair.db",
+                  ont = "ALL", #want all Biological Process (BP), Molecular Function (MF), and Cellular Component (CC) 
+                  pAdjustMethod = "BH",
+                  pvalueCutoff = 0.05,
+                  readable = FALSE) #when true, input gene IDs will be converted to gene symbols aka AT4G28300 vs FLOE1
+
+df_GO_shared_ASB_DEG_Col_C24_only = data.frame(GO_shared_ASB_DEG_Col_C24_only)
+head(GO_shared_ASB_DEG_Col_C24_only)
+```
+
+```{r}
+dotplot(GO_shared_ASB_DEG_Col_C24_only , showCategory=10)
+```
+```{r}
+#extracting the genes found to have significant GO terms (only 6 genes were found)
+GO_term_gene_23=unique(unlist(strsplit(df_GO_shared_ASB_DEG_Col_C24_only$geneID, "/")))
+
+#obtaining lfc information for the genes with enriched GO terms from DEG analysis of RNA-seq data
+subset_DEG_Col_C24= DEG_Col_C24[DEG_Col_C24$...1 %in% GO_term_gene_23,]
+
+#further subset data to only include geneID and log2fc cols
+subset_DEG_Col_C24= subset_DEG_Col_C24[, c( "...1", "log2FoldChange")]
+
+#convert to named vector to be used by heatplot
+foldChange_vector2= setNames(subset_DEG_Col_C24$log2FoldChange, subset_DEG_Col_C24$...1)
+foldChange_vector2
+```
+
+```{r}
+heatplot(GO_shared_ASB_DEG_Col_C24_only, foldChange= foldChange_vector2, showCategory = 10 )+
+  scale_fill_gradient(
+    low = "blue",  
+    high = "green", 
+    name = "foldChange"
+  ) +
+  theme(
+    legend.title = element_text(size = 12),
+    legend.text = element_text(size = 10)
+  )
+
+```
+### Now checking these genes on Jbrowse to see if there is any difference in peak heights:
+ 
+Following are genes found to be ASB in both F1a/F1b datasets and were found to be a DEG between Col/C24 from RNA-seq and associated with enriched/significant GO terms: 
+ 
+ Gene set 1: AT3G46530   AT5G48620   AT5G45490   AT3G02190   AT1G72840   AT5G05400   AT2G40010 
+ Gene set 2: AT4G04850   AT5G36160   AT2G01570   AT2G43820   AT3G47510   AT4G28300 (these sets of genes weren't found to have very significant log2fc compared to gene set 1)
+ 
+ 
+ 
+```{r}
+#conducting heatmap making of the 77 genes that are ASB in both F1a/F1b 
+```
+ 
+```{r}
+head(DEG_found_btwn_F1_mapped_to_Col_C24)
+```
+

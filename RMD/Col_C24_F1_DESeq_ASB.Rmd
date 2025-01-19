@@ -1,0 +1,713 @@
+---
+title: "Col_C24_F1_DESeq_ASB"
+output: html_document
+date: "2024-09-27"
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+##From Will!
+## DESeq2
+# Love MI, Huber W, Anders S (2014). “Moderated estimation of fold change and dispersion for RNA-seq data with DESeq2.” Genome Biology, 15, 550. doi: 10.1186/s13059-014-0550-8.
+
+## ggplot2
+# H. Wickham. ggplot2: Elegant Graphics for Data Analysis. Springer-Verlag New York, 2016.
+
+## ggVennDiagram
+# Gao, C.-H., Yu, G., and Cai, P. (2021). ggVennDiagram: An Intuitive, Easy-to-Use, and Highly Customizable R Package to Generate Venn Diagram. Frontiers in Genetics 12, 1598. doi: 10.3389/fgene.2021.706907.
+
+## enhancedVolcano
+# Blighe K, Rana S, Lewis M (2022). EnhancedVolcano: Publication-ready volcano plots with enhanced colouring and labeling. R package version 1.16.0, https://github.com/kevinblighe/EnhancedVolcano.
+
+## DEGReport (specifically DEGPatterns)
+# Pantano L (2022). DEGreport: Report of DEG analysis. R package version 1.34.0, http://lpantano.github.io/DEGreport/.
+
+## ClusterProfiler (For Gene Ontology)
+# Wu T, Hu E, Xu S, Chen M, Guo P, Dai Z, Feng T, Zhou L, Tang W, Zhan L, Fu x, Liu S, Bo X, Yu G (2021). “clusterProfiler 4.0: A universal enrichment tool for interpreting omics data.” The Innovation, 2(3), 100141. doi: 10.1016/j.xinn.2021.100141.
+
+##Understanding DESeq2: 
+#https://hbctraining.github.io/DGE_workshop_salmon_online/lessons/04b_DGE_DESeq2_analysis.html#:~:text=Interpretation%20of%20the%20dispersion%20plot&text=This%20is%20a%20good%20plot,with%20increasing%20mean%20expression%20levels. 
+```
+
+
+```{r}
+library(DESeq2)
+library(tidyverse)
+library(gridExtra)
+library(grid)
+library(DEGreport)
+library(ggplot2)
+library(dplyr)
+library(pheatmap)
+library(cluster)
+library("org.At.tair.db")
+library(clusterProfiler)
+library(ggVennDiagram)
+```
+
+```{r}
+#read in direct output of featurecounts 
+Col_ref_Feature_Counts = read.table("Col_C24_F1_counts.txt", header= TRUE, row.names = 1)
+C24_ref_Feature_Counts= read.table("C24_ref_counts.txt", header= TRUE, row.names= 1)
+
+#rms the first 5 cols that include strand, chr, start/end positions, length info, only have count matrix let
+Col_ref_Feature_Counts = subset(Col_ref_Feature_Counts, select= -c(1:5))
+C24_ref_Feature_Counts = subset(C24_ref_Feature_Counts, select= -c(1:5))
+
+#ow only want raw counts for Col-0/F1 reads mapped to Col ref genome
+Col_ref_Col_F1_only= subset(Col_ref_Feature_Counts, select= c(1:2, 5:6))
+
+#renaming the col names to represent the samples that it came from 
+colnames(Col_ref_Col_F1_only) = c("Col_rep1", "Col_rep2", "F1_rep1", "F1_rep2")
+colnames(C24_ref_Feature_Counts)= c("C24_rep1", "C24_rep2", "F1_rep1", "F1_rep2")
+```
+
+
+```{r}
+#read in the orthogroups csv, will use to map C24 genes to orthologous Col genes 
+orthogroups_df=read_delim("Orthogroups.csv", delim = "\t", show_col_types = FALSE)
+head(orthogroups_df)
+```
+
+#Here figuring out how many C24 genes can be 1 to 1 mapped to Col-0 genes (aka are these genes 1 to 1 orthologs?)
+```{r}
+#identify one-to-one mappings (rows where both C24 and Col contain a single gene)
+orthogroups_df= orthogroups_df %>%
+  mutate(
+    C24_count = str_count(C24, ",") + 1,  #count genes in C24 (number of commas + 1)
+    Col_count = str_count(Col, ",") + 1   #count genes in Col (number of commas + 1)
+  )
+
+#calc how many are one-to-one (both C24 and Col have exactly 1 gene)
+one_to_one_count= orthogroups_df %>% filter(C24_count == 1 & Col_count == 1) %>% nrow()
+
+#calc how many are not one-to-one (either C24 or Col has more than 1 gene)
+not_one_to_one_count= orthogroups_df %>% filter(C24_count > 1 | Col_count > 1) %>% nrow()
+
+# calculate sum of C24_count for non-one-to-one entries, ignoring NA values
+total_C24_genes = orthogroups_df %>%filter(C24_count > 1 | Col_count > 1) %>% summarise(total_C24_genes = sum(C24_count, na.rm = TRUE)) %>% pull(total_C24_genes)
+
+cat("One-to-one gene mappings:", one_to_one_count, "\n")
+cat("Not one-to-one gene mappings:", not_one_to_one_count, "\n")
+cat("Total number of C24 genes in non-one-to-one entries:", total_C24_genes, "\n")
+
+```
+
+
+```{r}
+#here checking that all C24 gene entries in the orthogroups df is unique
+
+#split comma-separated C24 genes into separate rows, exclude NA values
+orthogroups_flattened_C24=orthogroups_df %>%separate_rows(C24, sep = ", ") %>% filter(!is.na(C24))  
+
+#check for duplicate C24 genes, keep only those that appear more than once
+duplicate_C24_genes= orthogroups_flattened_C24 %>% group_by(C24) %>%filter(n() > 1) %>% arrange(C24)  
+
+#check how many unique C24 genes are duplicated
+n_duplicates= nrow(duplicate_C24_genes)
+n_duplicates
+```
+
+```{r}
+# install.packages("ggplot2")
+library(ggplot2)
+
+#make df for barplot
+ortholog_counts <- data.frame(
+  Mapping_Type = c("One-to-One", "Many-to-Many"),
+  Count = c(one_to_one_count, total_C24_genes)
+)
+
+#make bar plot
+ortholog_bar_plot= ggplot(ortholog_counts, aes(x = Mapping_Type, y = Count, fill = Mapping_Type)) +
+  geom_bar(stat = "identity", fill="darkgray") + 
+  theme_minimal() + 
+  labs(title = "Orthologous Mapping of C24 to Col-0 Genes", x = "Mapping Type", y = "C24 Unique Gene Count") +  
+  theme(plot.title = element_text(hjust = 0.5, face = "bold"))
+
+
+print(ortholog_bar_plot)
+
+#save img to png
+ggsave(filename = "./ortholog_bar_plot.png", plot = ortholog_bar_plot, width = 6, height = 6, dpi = 200)
+
+```
+#Here now filtering the orthogroup df to only include C24 genes that have a corresponding Col-0 gene 
+
+```{r}
+
+#extracting genes that have 1 to 1 pair for Col/C24 orthologous genes 
+one_to_one_pairings= orthogroups_df %>%
+  filter(C24_count == 1 & Col_count == 1) %>%
+  mutate(C24 = gsub("\\.\\d+", "", C24)) %>%
+  mutate(Col = gsub("\\.\\d+", "", Col)) %>% 
+  select(C24, Col)  
+
+#add rownames of C24_ref_Feature_Counts as a column for the join
+C24_ref_Feature_Counts <- C24_ref_Feature_Counts %>%
+  rownames_to_column("C24_gene")  
+
+#left join to append the Col genes from one_to_one_pairings
+C24_ref_Feature_Counts <- C24_ref_Feature_Counts %>%
+  left_join(one_to_one_pairings, by = c("C24_gene" = "C24"))  
+
+#put the rownames back as C24 genes
+C24_ref_Feature_Counts <- C24_ref_Feature_Counts %>%
+  column_to_rownames("C24_gene")
+
+head(C24_ref_Feature_Counts)
+```
+```{r}
+# Count rows with NA values in the Col column
+na_count <- C24_ref_Feature_Counts %>%
+  filter(is.na(Col)) %>%
+  nrow()
+
+# Count rows with non-NA values in the Col column
+non_na_count <- C24_ref_Feature_Counts %>%
+  filter(!is.na(Col)) %>%
+  nrow()
+
+# Output the counts
+cat("Number of rows with NA in Col column:", na_count, "\n")
+cat("Number of rows with appended Col gene:", non_na_count, "\n")
+
+```
+
+```{r}
+# count rows with NA and non-NA values in the Col column
+na_count=C24_ref_Feature_Counts %>% filter(is.na(Col)) %>% nrow()
+
+non_na_count= C24_ref_Feature_Counts %>%filter(!is.na(Col)) %>%nrow()
+
+# make df for plotting
+counts_df= data.frame(Col_Status = c("No orthologous Col Gene", "Has an orthologous Col Gene"),Count = c(na_count, non_na_count))
+
+#make plot
+bar_plot= ggplot(counts_df, aes(x = Col_Status, y = Count, fill = Col_Status)) +
+  geom_bar(stat = "identity", fill= "darkblue") +
+  theme_minimal() +
+  labs(title = "C24 Genes from RNA-seq data with Orthologous Col-0 genes ", x = "C24 Gene with Orthologous Col-0 gene status", y = "Gene Count (C24)") +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold"))
+
+# Step 4: Print the bar plot
+print(bar_plot)
+
+# Optional: Save the plot to a file
+ggsave(filename = "Col_gene_status_bar_plot.png", plot = bar_plot, width = 6, height = 6, dpi = 200)
+
+```
+```{r}
+#drop entries with no associated Col-0 gene
+C24_ref_Feature_Counts=C24_ref_Feature_Counts %>%filter(!is.na(Col))
+
+head(C24_ref_Feature_Counts)
+```
+
+
+```{r}
+
+#convert rownames of Col_ref_Col_F1_only into a column for joining
+Col_ref_Col_F1_only=Col_ref_Col_F1_only %>% rownames_to_column("Col_gene")
+
+#full join the 2 dfs so that I get all the information
+merged_df=Col_ref_Col_F1_only %>%full_join(C24_ref_Feature_Counts, by = c("Col_gene" = "Col"))
+
+#add the col gene names back to rownames 
+merged_df= merged_df %>% column_to_rownames("Col_gene")
+
+head(merged_df)
+
+```
+
+```{r}
+#renaming cols to match metadata info 
+colnames(merged_df)= c("Col_rep1", "Col_rep2", "F1_mapped_Col_rep1", "F1_mapped_Col_rep2", "C24_rep1", "C24_rep2","F1_mapped_C24_rep1","F1_mapped_C24_rep2" )
+
+#replace NA values with 0 
+merged_df=merged_df %>% mutate_all(~ replace_na(., 0))
+
+head(merged_df)
+```
+
+
+```{r}
+#now making metadata information
+
+dat.sample = c("Col_rep1", "Col_rep2", "F1_mapped_Col_rep1", "F1_mapped_Col_rep2", "C24_rep1", "C24_rep2","F1_mapped_C24_rep1","F1_mapped_C24_rep2" )
+dat.condition=c("Col", "Col","F1_Col", "F1_Col", "C24", "C24", "F1_C24", "F1_C24")
+
+# make df with the conditions and use the sample names as row names
+cond.meta.data= data.frame(sample = dat.sample,
+   condition = dat.condition, 
+  row.names = "sample" )
+
+#need condition to be a factor 
+cond.meta.data$condition= as.factor(cond.meta.data$condition)
+```
+
+```{r}
+cond.meta.data
+```
+
+```{r}
+dds = DESeqDataSetFromMatrix(countData = merged_df, colData = cond.meta.data, 
+                              design = ~ condition) 
+
+
+```
+
+```{r}
+testing_merged= rownames_to_column(merged_df,var = "ID")
+head(testing_merged)
+```
+
+
+```{r}
+#checking to see the count distribution before filtering for my dataset 
+hist(log2(counts(dds) + 1), breaks = 100, main = "Count Distribution Before Filtering")
+```
+```{r}
+#only keep samples that have at least 10 counts in at least 2 of the biological replicates
+keep = rowSums(counts(dds) >= 10) >= 2
+dds = dds[keep,]
+#started with about 32,833 genes and ended with 18,837, resulting in a much improved count distribution
+hist(log2(counts(dds) + 1), breaks = 100, main = "Count Distribution After Filtering")
+```
+
+```{r}
+#use this to norm raw counts in dataset, adjust for seq depth/library size across the samples
+dds= estimateSizeFactors(dds)
+```
+
+```{r}
+#checking to see the size factor variation between samples, seem to be similar/within reasonable range
+# 1= lib size is close to average across all samples, >1 means sample has more reads compared to avg
+sizeFactors(dds)
+```
+
+
+```{r}
+#use rlog transformation, good for small datasets like mine, conduct bias correction for low counts, and reduces noise 
+
+#want blind=True; compares samples so that it is unbiased by prior information on samples
+rld= rlog(dds, blind=TRUE)
+```
+
+
+```{r}
+#plot pca on log2 transformed dds data, using ntop=500 top features by variance
+pca_plot= plotPCA(rld, intgroup= c("condition"))
+print(pca_plot)
+
+#can see that PC2 has 0% variance, could be that rlog transformation caused too. much shrinkage of genes with low expression, but still shows that there is separation between Col and C24 aligned samples, try out vst which is less aggressive 
+
+#rlog is less sensitive to size factors,which could be why it shows 0% variance for PC2, since size factor could vary widely between our samples 
+```
+
+```{r}
+#using vst, stabilizes variance without excessive shrinking, ensures that values have almost constant variance along the range of means 
+vsd =vst(dds, blind = TRUE)
+pca_plot_vst =plotPCA(vsd, intgroup = "condition")
+print(pca_plot_vst)
+```
+### Overall can see that out replicates are clustered together tightly and Col and C24 samples are very segregated. Can see that F1_C24 and C24 samples are more close to each other compared to Col and F1_Col samples (where F1_C24 samples are F1 samples that were mapped to the C24 reference genome). 
+
+
+```{r}
+#estimate dispersion (aka within-group variability by describing how much the variance deviates from the mean) beyond poisson noise for each gene 
+dds= estimateDispersions(dds)
+```
+
+```{r}
+#plotting the dispersion estimates 
+plotDispEsts(dds)
+```
+### Can see that as the read count increases, the dispersion decreases, which is what we expect. We also see that the dispersion estimates(gene-est) generally scatter around the curve which is also expected. There does seem to be strong shrinkage since we can see that the gene-wise estimates (black dots) have been shifted closer to the fitted trend line (red) when observing the final disperison estimates (blue dots); that is due to having only 2 replicates per condition. This strong shrinkage still helps to reduce noise, and prevent false positives since the variance estimates are stabilized. The only worries would be that we are missing differential expression of genes where actual variability exists, leading to less DEGs to be discovered.  
+
+```{r}
+#running DEseq on full dataset 
+dds = DESeq(dds)
+```
+```{r}
+#alpha= p-adj value/FDR corrected p value, if 0.01, means 1% of significant tests will result in false positives 
+#Col = ref/baseline since it is second condition in the list
+results_col_c24= results(dds, contrast = c("condition","C24", "Col"), alpha = 0.01)
+head(results_col_c24)
+
+```
+
+```{r}
+#ordering dataset from lowest to highest padj values 
+results_col_c24= results_col_c24[order(results_col_c24$padj),]
+head(results_col_c24)
+```
+```{r}
+summary(results_col_c24)
+```
+```{r}
+#checking to see how many N/A values show up 
+na_log2fc1= results_col_c24[is.na(results_col_c24$log2FoldChange), ]
+
+cat("Number of rows with NA in log2FoldChange:", nrow(na_log2fc1), "\n")
+```
+
+
+
+```{r}
+par(mfrow=c(2,2)) #makes a 2x2 graphic object that we can fill with plots
+
+plotCounts(dds, gene="AT1G54040", intgroup="condition")
+plotCounts(dds, gene="AT3G28270", intgroup="condition")
+plotCounts(dds, gene="AT5G42090", intgroup="condition")
+plotCounts(dds, gene="AT4G00165", intgroup="condition")
+plotCounts(dds, gene="AT3G62530", intgroup="condition")
+plotCounts(dds, gene="AT5G23020", intgroup="condition")
+```
+```{r}
+with(results_col_c24, plot(log2FoldChange, -log10(pvalue), pch=20, main="Volcano plot of DEGS between Col and C24", xlim=c(-8,8)))
+
+#add colored points: blue if padj<0.01, red if log2FC>2 and padj<0.01)
+with(subset(results_col_c24, padj<.01 ), points(log2FoldChange, -log10(pvalue), pch=20, col="blue"))
+with(subset(results_col_c24, padj<.01 & abs(log2FoldChange)>2), points(log2FoldChange, -log10(pvalue), pch=20, col="red"))
+```
+
+## Looks a bit odd, will try lfcshrink to see if it will help... only helps with LFC but not with the significant pvalues... those will still remain the same 
+
+```{r}
+library(apeglm) #recommended to be used for specific contrasts, suppose to give accurate fold changes 
+
+#perform lfcShrink to get shrunken log2 fold changes
+results_shrunk = lfcShrink(dds, coef = "condition_Col_vs_C24", type = "apeglm")
+
+#cap -log10 adjusted p-values for better visualization
+#results_shrunk$log10padj = pmin(-log10(results_shrunk$padj), 50)
+
+#volcano plot with capped p-values
+with(results_shrunk, plot(log2FoldChange, -log10(padj), pch = 20, main = "Volcano Plot (Shrunk LFC)", xlim = c(-8, 8),xlab = "Shrunk log2 Fold Change", ylab = "-log10(p-adj)"))
+
+#add blue points: padj < 0.01
+with(subset(results_shrunk, padj < 0.01), points(log2FoldChange, -log10(padj), pch = 20, col = "blue"))
+
+#add red points: padj < 0.01 & abs(log2FoldChange) > 2
+with(subset(results_shrunk, padj < 0.01 & abs(log2FoldChange) > 2), points(log2FoldChange, -log10(padj), pch = 20, col = "red"))
+
+#legend to describe colored points
+legend("topright", legend = c("padj < 0.01", "padj < 0.01 & abs(log2FC) > 2"), 
+       col = c("blue", "red"), pch = 20)
+
+```
+## Going to try clustering/GO analysis on the original results_col_c24--> still keeps the same DEGs, which is what I am more interested in, will also keep comparisons between F1_Col vs F1_C24 DEGs the same. 
+
+
+```{r}
+length(sig_genes_col_c24)
+dim(normalized_counts)
+dim(results_shrunk)
+```
+
+```{r}
+sig_genes_col_c24 = rownames(results_col_c24)
+
+#obtain normalized counts form dds obj using rlog function 
+normalized_counts = assay(rld)
+
+#subset normalized counts for only the significant DEGs
+sig_counts_col_c24 = normalized_counts[sig_genes_col_c24, ]
+
+#subset those counts for Col and C24 replicates only
+col_c24_counts = sig_counts_col_c24[, grep("^(Col|C24)_rep", colnames(sig_counts_col_c24))]
+
+```
+
+```{r}
+# make dist matrix using pearson correlation
+col_c24_dist = as.dist(1 - cor(t(col_c24_counts)))
+
+#hierarchical clustering w/ avg linkage
+col_c24_hclust =  hclust(col_c24_dist, method = "average")
+
+#plot dendrogram to visualize clustering
+plot(col_c24_hclust, main = "Hierarchical Clustering of Col and C24 Samples")
+```
+```{r}
+#silhouette analysis to find the optimal number of clusters
+#initialize a vector to store average silhouette widths for k = 2 to 10
+avg_sil_widths = numeric()
+
+for (i in 2:10) {
+  #cut dendrogram into 'i' clusters
+  tempclust = cutree(col_c24_hclust, k = i)
+  
+  #calc silhouette widths for the current clustering
+  sil= silhouette(tempclust, col_c24_dist)
+  
+  #store the average silhouette width for this value of k
+  avg_sil_widths[i] = mean(sil[, "sil_width"])
+}
+
+```
+
+```{r}
+#plot average silhouette widths to determine the optimal k
+plot(2:10, avg_sil_widths[2:10], type = "b", pch = 10, xlab = "Number of Clusters (k)", ylab = "Average Silhouette Width", main = "Silhouette Analysis for Optimal k")
+abline(v = which.max(avg_sil_widths), col = "red", lty = 2)
+
+#choose the optimal number of clusters
+optimal_k = which.max(avg_sil_widths)
+
+#cut dendrogram into 'optimal_k' clusters
+optimal_clusters = cutree(col_c24_hclust, k = optimal_k)
+```
+
+
+```{r}
+#extract samples belonging to each cluster, 2
+cluster1_samples = names(which(optimal_clusters == 1))
+cluster2_samples = names(which(optimal_clusters == 2))
+
+
+#subset counts for these clusters
+cluster1_counts = col_c24_counts[cluster1_samples, ]
+cluster2_counts = col_c24_counts[cluster2_samples,]
+
+```
+
+```{r}
+#plot heatmap for DEGs btwn Col and C24 for Cluster 1 --> 8,370 genes 
+pheatmap( cluster1_counts, annotation_col= cond.meta.data, scale = "row", cluster_cols = FALSE, show_rownames = FALSE,main = "Cluster 1 Heatmap for DEGs found between Col and C24")
+
+```
+```{r}
+#plot heatmap for DEGs btwn Col and C24 for Cluster 2 --> 10,467 genes 
+pheatmap(cluster2_counts, annotation_col= cond.meta.data, scale = "row", cluster_cols = FALSE,show_rownames = FALSE, main = "Cluster 2 Heatmap for DEGs found between Col and C24")
+```
+
+```{r}
+#GO term analysis for the 2 clusters of DEGs found between Col and C24 
+GO_col_c24_cluster_1 = enrichGO(gene = cluster1_samples,
+                  keyType = "TAIR",
+                  OrgDb = "org.At.tair.db",
+                  ont = "ALL", #want all Biological Process (BP), Molecular Function (MF), and Cellular Component (CC) 
+                  pAdjustMethod = "none",
+                  pvalueCutoff = 0.05,
+                  readable = TRUE) #when true, input gene IDs will be converted to gene symbols aka AT4G28300 vs FLOE1
+
+df_GO_col_c24_cluster_1 = data.frame(GO_col_c24_cluster_1 )
+head(df_GO_col_c24_cluster_1)
+```
+```{r}
+dotplot(GO_col_c24_cluster_1, showCategory=10)
+```
+
+```{r}
+GO_col_c24_cluster_2 = enrichGO(gene = cluster2_samples,
+                  keyType = "TAIR",
+                  OrgDb = "org.At.tair.db",
+                  ont = "ALL", #want all Biological Process (BP), Molecular Function (MF), and Cellular Component (CC) 
+                  pAdjustMethod = "none",
+                  pvalueCutoff = 0.05,
+                  readable = TRUE) #when true, input gene IDs will be converted to gene symbols aka AT4G28300 vs FLOE1
+
+df_GO_col_c24_cluster_2 = data.frame(GO_col_c24_cluster_2 )
+head(df_GO_col_c24_cluster_2)
+```
+```{r}
+dotplot(GO_col_c24_cluster_2, showCategory=10)
+```
+
+## Now doing the same but for DEG found from F1 samples mapped to Col and C24 
+```{r}
+#alpha= p-adj value/FDR corrected p value, if 0.01, means 1% of significant tests will result in false positives 
+#Col = ref/baseline since it is second condition in the list
+results_F1= results(dds, contrast = c("condition","F1_C24", "F1_Col"), alpha = 0.01)
+results_F1= results_F1[order(results_F1$padj),]
+head(results_F1)
+summary(results_F1)
+```
+### These values make sense since we are comparing 2 different accession of Arabidopsis. Can see that for F1 there are less DEGs, which makes sense since there are more similarities given they are the same sample just mapped to different reference genomes.
+
+```{r}
+with(results_F1, plot(log2FoldChange, -log10(pvalue), pch=20, main="Volcano plot of DEGs from F1 samples mapped to Col and C24", xlim=c(-8,8)))
+
+#add colored points: blue if padj<0.01, red if log2FC>2 and padj<0.01)
+with(subset(results_F1, padj<.01 ), points(log2FoldChange, -log10(pvalue), pch=20, col="blue"))
+with(subset(results_F1, padj<.01 & abs(log2FoldChange)>2), points(log2FoldChange, -log10(pvalue), pch=20, col="red"))
+```
+### Very similar results to the DEGS found between Col/C24, makes sense given that the F1 genome was mapped to the same reference genomes. 
+
+```{r}
+sig_genes_F1 = rownames(results_F1)
+
+#subset normalized counts for only the significant DEGs
+sig_counts_F1 = normalized_counts[sig_genes_F1, ]
+
+#subset those counts for Col and C24 replicates only
+F1_counts = sig_counts_F1[, grep("^F1", colnames(sig_counts_F1))]
+```
+
+
+```{r}
+# make dist matrix using pearson correlation
+F1_dist = as.dist(1 - cor(t(F1_counts)))
+
+#hierarchical clustering w/ avg linkage
+F1_hclust =  hclust(F1_dist, method = "average")
+
+#plot dendrogram to visualize clustering
+plot(F1_hclust, main = "Hierarchical Clustering DEG found between F1 sample mapped to Col and C24 genomes")
+```
+
+```{r}
+#silhouette analysis to find the optimal number of clusters
+#initialize a vector to store average silhouette widths for k = 2 to 10
+avg_sil_widths = numeric()
+
+for (i in 2:10) {
+  #cut dendrogram into 'i' clusters
+  tempclust = cutree(F1_hclust, k = i)
+  
+  #calc silhouette widths for the current clustering
+  sil= silhouette(tempclust, F1_dist)
+  
+  #store the average silhouette width for this value of k
+  avg_sil_widths[i] = mean(sil[, "sil_width"])
+}
+
+```
+
+```{r}
+#plot average silhouette widths to determine the optimal k
+plot(2:10, avg_sil_widths[2:10], type = "b", pch = 10, xlab = "Number of Clusters (k)", ylab = "Average Silhouette Width", main = "F1 Samples Silhouette Analysis for Optimal k ")
+abline(v = which.max(avg_sil_widths), col = "red", lty = 2)
+```
+```{r}
+#choose the optimal number of clusters
+optimal_k = which.max(avg_sil_widths)
+
+#cut dendrogram into 'optimal_k' clusters
+optimal_clusters_F1 = cutree(F1_hclust, k = optimal_k)
+
+#extract samples belonging to each cluster, 4
+cluster1_samples_F1 = names(which(optimal_clusters_F1 == 1))
+cluster2_samples_F1 = names(which(optimal_clusters_F1 == 2))
+cluster3_samples_F1 = names(which(optimal_clusters_F1 == 3))
+cluster4_samples_F1 = names(which(optimal_clusters_F1 == 4))
+
+#subset counts for these clusters
+cluster1_counts_F1 = F1_counts[cluster1_samples_F1, ]
+cluster2_counts_F1 = F1_counts[cluster2_samples_F1,]
+cluster3_counts_F1 = F1_counts[cluster3_samples_F1, ]
+cluster4_counts_F1 = F1_counts[cluster4_samples_F1,]
+```
+
+
+```{r}
+#plot heatmap for DEGs btwn F1 samples for Cluster 1
+pheatmap( cluster1_counts_F1, annotation_col= cond.meta.data, scale = "row", cluster_cols = FALSE, show_rownames = FALSE,main = "Cluster 1 Heatmap for DEGs found between F1 mapped to Col and C24")
+
+#plot heatmap for DEGs btwn F1 samples for Cluster 2
+pheatmap(cluster2_counts_F1, annotation_col= cond.meta.data, scale = "row", cluster_cols = FALSE,show_rownames = FALSE, main = "Cluster 2 Heatmap for DEGs found between F1 mapped to Col and C24")
+
+#plot heatmap for DEGs btwn F1 samples for Cluster 3
+pheatmap( cluster3_counts_F1, annotation_col= cond.meta.data, scale = "row", cluster_cols = FALSE, show_rownames = FALSE,main = "Cluster 3 Heatmap for DEGs found between F1 mapped to Col and C24")
+
+#plot heatmap for DEGs btwn F1 samples for Cluster 4
+pheatmap(cluster4_counts_F1, annotation_col= cond.meta.data, scale = "row", cluster_cols = FALSE,show_rownames = FALSE, main = "Cluster 4 Heatmap for DEGs found between F1 mapped to Col and C24")
+```
+### Seems like really only CLuster 1 and 2 are comparing the 2 conditions, Cluster 3 and 4 seems to be distinct discrepancies between the 2 replicates, still will conduct the GO analysis just to see what turns up, but it seems to be something to do with the replicates rather DEGs between F1_Col and F1_C24
+
+```{r}
+#GO term analysis for the cluster 1 of DEGs found between F1 mapped to Col and C24 --> interesting that no GO terms were found to be significant! Makes sense since there were only 1028 genes in this cluster 
+GO_F1_cluster_1 = enrichGO(gene = cluster1_samples_F1,
+                  keyType = "TAIR",
+                  OrgDb = "org.At.tair.db",
+                  ont = "ALL", #want all Biological Process (BP), Molecular Function (MF), and Cellular Component (CC) 
+                  pAdjustMethod = "none",
+                  pvalueCutoff = 0.05,
+                  readable = TRUE) #when true, input gene IDs will be converted to gene symbols aka AT4G28300 vs FLOE1
+
+df_GO_F1_cluster_1 = data.frame(GO_F1_cluster_1 )
+head(GO_F1_cluster_1)
+#dotplot(GO_F1_cluster_1 , showCategory=10)
+```
+
+```{r}
+#3771 genes in cluster2
+GO_F1_cluster_2 = enrichGO(gene = cluster2_samples_F1,
+                  keyType = "TAIR",
+                  OrgDb = "org.At.tair.db",
+                  ont = "ALL", #want all Biological Process (BP), Molecular Function (MF), and Cellular Component (CC) 
+                  pAdjustMethod = "none",
+                  pvalueCutoff = 0.05,
+                  readable = TRUE) #when true, input gene IDs will be converted to gene symbols aka AT4G28300 vs FLOE1
+
+df_GO_F1_cluster_2 = data.frame(GO_F1_cluster_2 )
+head(GO_F1_cluster_2)
+dotplot(GO_F1_cluster_2 , showCategory=10)
+```
+### Seems like between the 2 replicates, there were some samples that were of better quality, especially based on Cluster 4, got quite a bit of DEGs related to hypoxia and cell aging/death/senescence. Based on cluster3, seems htat the replicates maybe had differences in 
+```{r}
+#cluster3= 7,157 genes 
+#GO term analysis for the last 2 clusters of DEGs found between F1 mapped to Col and C24 
+GO_F1_cluster_3 = enrichGO(gene = cluster3_samples_F1,
+                  keyType = "TAIR",
+                  OrgDb = "org.At.tair.db",
+                  ont = "ALL", #want all Biological Process (BP), Molecular Function (MF), and Cellular Component (CC) 
+                  pAdjustMethod = "none",
+                  pvalueCutoff = 0.05,
+                  readable = TRUE) #when true, input gene IDs will be converted to gene symbols aka AT4G28300 vs FLOE1
+
+df_GO_F1_cluster_3 = data.frame(GO_F1_cluster_3 )
+head(GO_F1_cluster_3)
+dotplot(GO_F1_cluster_3 , showCategory=10)
+```
+
+```{r}
+#cluster 4= 6,881 genes 
+GO_F1_cluster_4 = enrichGO(gene = cluster4_samples_F1,
+                  keyType = "TAIR",
+                  OrgDb = "org.At.tair.db",
+                  ont = "ALL", #want all Biological Process (BP), Molecular Function (MF), and Cellular Component (CC) 
+                  pAdjustMethod = "none",
+                  pvalueCutoff = 0.05,
+                  readable = TRUE) #when true, input gene IDs will be converted to gene symbols aka AT4G28300 vs FLOE1
+
+df_GO_F1_cluster_4 = data.frame(GO_F1_cluster_4 )
+head(GO_F1_cluster_4)
+dotplot(GO_F1_cluster_4 , showCategory=10)
+```
+### Now extracting DEGs from Col/C24 comparison and F1_Col vs F1_C24 comparisons (cluster 1 and 2 only)
+
+```{r}
+#export the Col/C24 DEG results as df to compare with ASB results 
+write.csv(as.data.frame(results_col_c24), file="DEG_found_btwn_Col_C24.csv")
+```
+
+```{r}
+#export DEGs found between F1_Col and F1_C24 as df to compare with ASb results, want DEGs from cluster 1 and 2 only  
+
+F1_DEGs_cluster1_and_2= union(cluster1_samples_F1, cluster2_samples_F1)
+
+F1_DEGs_df= results_F1[F1_DEGs_cluster1_and_2, , drop= FALSE]
+
+write.csv(as.data.frame(F1_DEGs_df), file="DEG_found_btwn_F1_mapped_to_Col_C24.csv")
+```
+
+
+### Now I also want to check to see how many of the DEGs from the 2 dfs generated overlap, if many overlaps, then maybe just use 1 df to compare
+
+```{r}
+x=list("Col vs C24" = rownames(DEG_found_btwn_Col_C24),"F1_Col vs F1_C24" = rownames(DEG_found_btwn_F1_mapped_to_Col_C24))
+
+ggVennDiagram(x, category.names = c("DEG Col/C24", "DEG F1 Col/C24" ))+
+  scale_fill_gradient(low = "#F4FAFE", high = "#4981BF")+ 
+  coord_flip()+
+  labs(title = "Venn Diagram of DEGs: Col/C24 vs F1 Col/C24") + theme(plot.title = element_text(hjust = 0.5, size = 16, face = "bold"))
+```
+### Interesting, all DEGs found from F1_Col and F1_C24 are the same as the ones in Col vs C24 DEGs, makes sense, but was originally thinking that there may be a few that would be unique to the F1 DEGs. Will still use the 2 different datasets to compare the F1a/b union results to see what genes comes from each dataset. Do that all come from the 25% overalap? or do some of them come from the DEGs from Col/C24 comparison? 
+
+
+
